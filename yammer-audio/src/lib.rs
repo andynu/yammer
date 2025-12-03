@@ -8,4 +8,6 @@
 pub mod capture;
 pub mod vad;
 
-pub use capture::AudioCapture;
+pub use capture::{
+    AudioCapture, AudioChunk, AudioError, AudioResult, InputDeviceInfo, StreamConfigInfo, write_wav,
+};

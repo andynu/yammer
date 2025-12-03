@@ -6,8 +6,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use yammer_audio::{AudioCapture, write_wav};
 use yammer_core::{
     format_bytes, get_default_models, get_model_registry, DownloadManager, ModelStatus,
 };
@@ -39,6 +42,24 @@ enum Commands {
 
     /// List available and downloaded models
     ListModels,
+
+    /// List available audio input devices
+    ListDevices,
+
+    /// Record audio from microphone
+    Record {
+        /// Recording duration in seconds
+        #[arg(long, default_value = "5")]
+        duration: u64,
+
+        /// Output WAV file path
+        #[arg(long, short)]
+        output: PathBuf,
+
+        /// Audio device to use (default: system default)
+        #[arg(long)]
+        device: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -57,6 +78,12 @@ async fn main() -> Result<()> {
         }
         Some(Commands::ListModels) => {
             list_models().await?;
+        }
+        Some(Commands::ListDevices) => {
+            list_devices()?;
+        }
+        Some(Commands::Record { duration, output, device }) => {
+            record_audio(duration, output, device).await?;
         }
         None => {
             println!("yammer - Linux dictation app");
@@ -217,6 +244,90 @@ async fn list_models() -> Result<()> {
             println!("  {:?}", path);
         }
     }
+
+    Ok(())
+}
+
+fn list_devices() -> Result<()> {
+    let devices = AudioCapture::list_devices()?;
+
+    if devices.is_empty() {
+        println!("No audio input devices found.");
+        println!("\nNote: On Linux, you may need to install ALSA dev libraries:");
+        println!("  sudo apt install libasound2-dev");
+        return Ok(());
+    }
+
+    println!("Available audio input devices:\n");
+
+    for device in devices {
+        let default_marker = if device.is_default { " (default)" } else { "" };
+        println!("  {}{}", device.name, default_marker);
+
+        for config in &device.configs {
+            println!(
+                "    - {} ch, {}-{} Hz, {}",
+                config.channels,
+                config.min_sample_rate,
+                config.max_sample_rate,
+                config.sample_format
+            );
+        }
+        println!();
+    }
+
+    Ok(())
+}
+
+async fn record_audio(duration_secs: u64, output: PathBuf, device: Option<String>) -> Result<()> {
+    let capture = if let Some(ref device_name) = device {
+        println!("Using device: {}", device_name);
+        AudioCapture::with_device(device_name)?
+    } else {
+        AudioCapture::new()?
+    };
+
+    println!(
+        "Recording {} seconds at {} Hz...",
+        duration_secs,
+        capture.sample_rate()
+    );
+
+    let pb = ProgressBar::new(duration_secs);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{msg} [{bar:40.cyan/blue}] {pos}/{len}s")?
+            .progress_chars("#>-"),
+    );
+    pb.set_message("Recording");
+
+    // Start a task to update progress
+    let pb_clone = pb.clone();
+    let progress_handle = tokio::spawn(async move {
+        for i in 0..duration_secs {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            pb_clone.set_position(i + 1);
+        }
+    });
+
+    let duration = Duration::from_secs(duration_secs);
+    let audio = capture.record_duration(duration).await?;
+
+    progress_handle.abort();
+    pb.finish_with_message("Recording complete");
+
+    // Write to WAV file
+    println!("Writing to {:?}...", output);
+    write_wav(&output, &audio.samples, audio.sample_rate)?;
+
+    let file_size = std::fs::metadata(&output)?.len();
+    println!(
+        "Saved {} samples ({}) to {:?}",
+        audio.samples.len(),
+        format_bytes(file_size),
+        output
+    );
+    println!("\nPlay with: aplay {:?}", output);
 
     Ok(())
 }

@@ -9,3 +9,6 @@ thiserror.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+cpal.workspace = true
+hound.workspace = true
+ringbuf.workspace = true
