@@ -5,4 +5,4 @@
 
 pub mod corrector;
 
-pub use corrector::Corrector;
+pub use corrector::{CorrectionResult, Corrector, CorrectorConfig, CorrectorError, CorrectorResult};

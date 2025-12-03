@@ -14,6 +14,7 @@ use yammer_audio::{AudioCapture, resample_to_whisper, write_wav, Vad, VadEvent, 
 use yammer_core::{
     format_bytes, get_default_models, get_model_registry, DownloadManager, ModelStatus, ModelType,
 };
+use yammer_llm::Corrector;
 use yammer_stt::Transcriber;
 
 #[derive(Parser)]
@@ -113,6 +114,16 @@ enum Commands {
         #[arg(long, default_value = "0")]
         duration: u64,
     },
+
+    /// Correct text using LLM
+    Correct {
+        /// Text to correct
+        text: String,
+
+        /// Path to LLM model file (auto-detected from downloaded models if not specified)
+        #[arg(long)]
+        model: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -146,6 +157,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Dictate { model, threshold, device, duration }) => {
             dictate(model, threshold, device, duration).await?;
+        }
+        Some(Commands::Correct { text, model }) => {
+            correct_text(text, model).await?;
         }
         None => {
             println!("yammer - Linux dictation app");
@@ -669,5 +683,52 @@ async fn dictate(
     }
 
     println!("\n\nDictation stopped.");
+    Ok(())
+}
+
+async fn correct_text(text: String, model_path: Option<PathBuf>) -> Result<()> {
+    // Find model path
+    let model = if let Some(path) = model_path {
+        path
+    } else {
+        // Auto-detect from downloaded models
+        let manager = DownloadManager::new(DownloadManager::default_model_dir());
+        let registry = get_model_registry();
+
+        let llm_model = registry
+            .iter()
+            .find(|m| m.model_type == ModelType::Llm && {
+                let status = tokio::runtime::Handle::current()
+                    .block_on(manager.check_status(m));
+                matches!(status, ModelStatus::Ready { .. })
+            });
+
+        match llm_model {
+            Some(m) => {
+                let status = manager.check_status(m).await;
+                if let ModelStatus::Ready { path } = status {
+                    println!("Using model: {}", m.name);
+                    path
+                } else {
+                    anyhow::bail!("Model not ready");
+                }
+            }
+            None => {
+                println!("No LLM model found. Download one first:");
+                println!("  yammer download-models");
+                anyhow::bail!("No LLM model available");
+            }
+        }
+    };
+
+    println!("Loading LLM model...");
+    let corrector = Corrector::new(&model)?;
+
+    println!("Correcting: \"{}\"", text);
+    let result = corrector.correct(&text)?;
+
+    println!("\nCorrected: \"{}\"", result.text);
+    println!("Latency: {}ms", result.latency_ms);
+
     Ok(())
 }
