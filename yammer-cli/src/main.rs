@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use yammer_audio::{AudioCapture, resample_to_whisper, write_wav, Vad, WHISPER_SAMPLE_RATE};
+use yammer_audio::{AudioCapture, resample_to_whisper, write_wav, Vad, VadEvent, VadProcessor, WHISPER_SAMPLE_RATE};
 use yammer_core::{
     format_bytes, get_default_models, get_model_registry, DownloadManager, ModelStatus, ModelType,
 };
@@ -94,6 +94,25 @@ enum Commands {
         #[arg(long, short)]
         timestamps: bool,
     },
+
+    /// Live dictation: speak and see text appear in real-time
+    Dictate {
+        /// Path to Whisper model file (auto-detected from downloaded models if not specified)
+        #[arg(long)]
+        model: Option<PathBuf>,
+
+        /// VAD threshold (RMS level, default 0.01)
+        #[arg(long, default_value = "0.01")]
+        threshold: f32,
+
+        /// Audio device to use
+        #[arg(long)]
+        device: Option<String>,
+
+        /// Duration to run in seconds (0 = until Ctrl+C)
+        #[arg(long, default_value = "0")]
+        duration: u64,
+    },
 }
 
 #[tokio::main]
@@ -124,6 +143,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Transcribe { file, model, timestamps }) => {
             transcribe_file(file, model, timestamps).await?;
+        }
+        Some(Commands::Dictate { model, threshold, device, duration }) => {
+            dictate(model, threshold, device, duration).await?;
         }
         None => {
             println!("yammer - Linux dictation app");
@@ -501,5 +523,151 @@ async fn transcribe_file(file: PathBuf, model_path: Option<PathBuf>, timestamps:
         println!("{}", transcript.text());
     }
 
+    Ok(())
+}
+
+async fn dictate(
+    model_path: Option<PathBuf>,
+    threshold: f32,
+    device: Option<String>,
+    duration_secs: u64,
+) -> Result<()> {
+    // Find model path
+    let model = if let Some(path) = model_path {
+        path
+    } else {
+        // Auto-detect from downloaded models
+        let manager = DownloadManager::new(DownloadManager::default_model_dir());
+        let registry = get_model_registry();
+
+        let whisper_model = registry
+            .iter()
+            .find(|m| m.model_type == ModelType::Whisper && {
+                let status = tokio::runtime::Handle::current()
+                    .block_on(manager.check_status(m));
+                matches!(status, ModelStatus::Ready { .. })
+            });
+
+        match whisper_model {
+            Some(m) => {
+                let status = manager.check_status(m).await;
+                if let ModelStatus::Ready { path } = status {
+                    println!("Using model: {}", m.name);
+                    path
+                } else {
+                    anyhow::bail!("Model not ready");
+                }
+            }
+            None => {
+                println!("No Whisper model found. Download one first:");
+                println!("  yammer download-models");
+                anyhow::bail!("No Whisper model available");
+            }
+        }
+    };
+
+    println!("Loading Whisper model...");
+    let transcriber = Arc::new(Transcriber::new(&model)?);
+
+    // Set up audio capture
+    let capture = if let Some(ref device_name) = device {
+        println!("Using device: {}", device_name);
+        AudioCapture::with_device(device_name)?
+    } else {
+        AudioCapture::new()?
+    };
+
+    let native_rate = capture.sample_rate();
+    println!(
+        "Dictation mode - {} Hz, VAD threshold: {}",
+        native_rate, threshold
+    );
+    println!("Speak to transcribe. Press Ctrl+C to stop.\n");
+
+    // Start continuous capture (50ms chunks for VAD processing)
+    let (_handle, mut audio_rx) = capture.start_capture(50)?;
+
+    // Set up VAD processor
+    let mut vad_processor = VadProcessor::with_threshold(threshold);
+
+    // Set up Ctrl+C handler
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let running_clone = running.clone();
+    ctrlc::set_handler(move || {
+        running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+    })?;
+
+    let start_time = std::time::Instant::now();
+    let duration = if duration_secs == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(duration_secs))
+    };
+
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        // Check duration limit
+        if let Some(max_duration) = duration {
+            if start_time.elapsed() >= max_duration {
+                break;
+            }
+        }
+
+        // Get next audio chunk with timeout
+        let chunk = tokio::select! {
+            Some(chunk) = audio_rx.recv() => chunk,
+            _ = tokio::time::sleep(Duration::from_millis(100)) => continue,
+        };
+
+        // Process through VAD
+        let events = vad_processor.process(&chunk);
+
+        for event in events {
+            if let VadEvent::SpeechEnd { samples } = event {
+                // Speech segment complete, transcribe it
+                let speech_duration_ms = (samples.len() as f32 / native_rate as f32 * 1000.0) as u32;
+
+                // Skip very short segments (likely noise)
+                if speech_duration_ms < 200 {
+                    continue;
+                }
+
+                // Resample to 16kHz if needed
+                let samples_16k = if native_rate != WHISPER_SAMPLE_RATE {
+                    match resample_to_whisper(&samples, native_rate) {
+                        Ok(resampled) => resampled,
+                        Err(e) => {
+                            eprintln!("Resample error: {}", e);
+                            continue;
+                        }
+                    }
+                } else {
+                    samples
+                };
+
+                // Transcribe in a blocking task (whisper-rs is synchronous)
+                let transcriber_clone = transcriber.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    transcriber_clone.transcribe(&samples_16k)
+                }).await?;
+
+                match result {
+                    Ok(transcript) => {
+                        let text = transcript.text();
+                        if !text.trim().is_empty() {
+                            print!("{} ", text.trim());
+                            // Flush stdout to show text immediately
+                            use std::io::Write;
+                            std::io::stdout().flush()?;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("\n[Transcription error: {}]", e);
+                    }
+                }
+            }
+        }
+    }
+
+    println!("\n\nDictation stopped.");
     Ok(())
 }

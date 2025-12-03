@@ -325,6 +325,136 @@ impl AudioCapture {
     }
 }
 
+/// Start continuous audio capture, returning a receiver for audio chunks
+///
+/// Each chunk contains roughly `chunk_ms` milliseconds of audio.
+/// The stream continues until the returned `CaptureHandle` is dropped.
+pub struct CaptureHandle {
+    _stream: Stream,
+    is_running: Arc<AtomicBool>,
+}
+
+impl Drop for CaptureHandle {
+    fn drop(&mut self) {
+        self.is_running.store(false, Ordering::SeqCst);
+    }
+}
+
+impl AudioCapture {
+    /// Start continuous audio capture
+    ///
+    /// Returns a handle (keep alive to continue capture) and a receiver for audio chunks.
+    /// Each chunk contains approximately `chunk_ms` of audio samples.
+    pub fn start_capture(&self, chunk_ms: u32) -> AudioResult<(CaptureHandle, mpsc::Receiver<Vec<f32>>)> {
+        let samples_per_chunk = (self.config.sample_rate.0 as f32 * chunk_ms as f32 / 1000.0) as usize;
+        let (tx, rx) = mpsc::channel::<Vec<f32>>(100);
+
+        let is_running = Arc::new(AtomicBool::new(true));
+        let channels = self.config.channels;
+
+        let err_fn = |err| error!("Audio stream error: {}", err);
+
+        let supported_config = self
+            .device
+            .default_input_config()
+            .map_err(|e| AudioError::Device(e.to_string()))?;
+
+        // Buffer to accumulate samples
+        let buffer = Arc::new(std::sync::Mutex::new(Vec::with_capacity(samples_per_chunk * 2)));
+        let buffer_clone = buffer.clone();
+        let tx_clone = tx.clone();
+        let is_running_clone = is_running.clone();
+
+        let callback = move |data: &[f32], _: &cpal::InputCallbackInfo| {
+            if !is_running_clone.load(Ordering::SeqCst) {
+                return;
+            }
+
+            // Convert to mono
+            let mono: Vec<f32> = if channels == 1 {
+                data.to_vec()
+            } else {
+                data.chunks(channels as usize)
+                    .map(|frame| {
+                        let sum: f32 = frame.iter().sum();
+                        sum / channels as f32
+                    })
+                    .collect()
+            };
+
+            let mut buf = buffer_clone.lock().unwrap();
+            buf.extend(mono);
+
+            // Send chunks when we have enough samples
+            while buf.len() >= samples_per_chunk {
+                let chunk: Vec<f32> = buf.drain(..samples_per_chunk).collect();
+                if let Err(e) = tx_clone.try_send(chunk) {
+                    warn!("Failed to send audio chunk: {}", e);
+                }
+            }
+        };
+
+        let stream = match supported_config.sample_format() {
+            SampleFormat::F32 => {
+                self.device.build_input_stream(
+                    &self.config,
+                    callback,
+                    err_fn,
+                    None,
+                ).map_err(|e| AudioError::Stream(e.to_string()))?
+            }
+            SampleFormat::I16 => {
+                let callback = move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    if !is_running.load(Ordering::SeqCst) {
+                        return;
+                    }
+
+                    let mono: Vec<f32> = if channels == 1 {
+                        data.iter().map(|s| *s as f32 / i16::MAX as f32).collect()
+                    } else {
+                        data.chunks(channels as usize)
+                            .map(|frame| {
+                                let sum: f32 = frame.iter().map(|s| *s as f32 / i16::MAX as f32).sum();
+                                sum / channels as f32
+                            })
+                            .collect()
+                    };
+
+                    let mut buf = buffer.lock().unwrap();
+                    buf.extend(mono);
+
+                    while buf.len() >= samples_per_chunk {
+                        let chunk: Vec<f32> = buf.drain(..samples_per_chunk).collect();
+                        if let Err(e) = tx.try_send(chunk) {
+                            warn!("Failed to send audio chunk: {}", e);
+                        }
+                    }
+                };
+
+                self.device.build_input_stream(
+                    &self.config,
+                    callback,
+                    err_fn,
+                    None,
+                ).map_err(|e| AudioError::Stream(e.to_string()))?
+            }
+            format => return Err(AudioError::UnsupportedFormat(format)),
+        };
+
+        stream.play().map_err(|e| AudioError::Stream(e.to_string()))?;
+        info!("Continuous capture started");
+
+        let is_running_for_handle = Arc::new(AtomicBool::new(true));
+        Ok((
+            CaptureHandle {
+                _stream: stream,
+                is_running: is_running_for_handle,
+            },
+            rx,
+        ))
+    }
+}
+
 /// Write audio samples to WAV file
 pub fn write_wav(path: &std::path::Path, samples: &[f32], sample_rate: u32) -> std::io::Result<()> {
     let spec = hound::WavSpec {
