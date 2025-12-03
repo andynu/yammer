@@ -32,3 +32,4 @@ clap = { version = "4", features = ["derive"] }
 cpal = "0.15"
 hound = "3"
 ringbuf = "0.4"
+rubato = "0.16"

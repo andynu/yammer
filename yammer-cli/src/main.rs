@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use yammer_audio::{AudioCapture, write_wav};
+use yammer_audio::{AudioCapture, resample_to_whisper, write_wav, WHISPER_SAMPLE_RATE};
 use yammer_core::{
     format_bytes, get_default_models, get_model_registry, DownloadManager, ModelStatus,
 };
@@ -59,6 +59,10 @@ enum Commands {
         /// Audio device to use (default: system default)
         #[arg(long)]
         device: Option<String>,
+
+        /// Resample to 16kHz for Whisper compatibility
+        #[arg(long)]
+        resample: bool,
     },
 }
 
@@ -82,8 +86,8 @@ async fn main() -> Result<()> {
         Some(Commands::ListDevices) => {
             list_devices()?;
         }
-        Some(Commands::Record { duration, output, device }) => {
-            record_audio(duration, output, device).await?;
+        Some(Commands::Record { duration, output, device, resample }) => {
+            record_audio(duration, output, device, resample).await?;
         }
         None => {
             println!("yammer - Linux dictation app");
@@ -279,7 +283,7 @@ fn list_devices() -> Result<()> {
     Ok(())
 }
 
-async fn record_audio(duration_secs: u64, output: PathBuf, device: Option<String>) -> Result<()> {
+async fn record_audio(duration_secs: u64, output: PathBuf, device: Option<String>, resample: bool) -> Result<()> {
     let capture = if let Some(ref device_name) = device {
         println!("Using device: {}", device_name);
         AudioCapture::with_device(device_name)?
@@ -287,10 +291,14 @@ async fn record_audio(duration_secs: u64, output: PathBuf, device: Option<String
         AudioCapture::new()?
     };
 
+    let native_rate = capture.sample_rate();
+    let target_rate = if resample { WHISPER_SAMPLE_RATE } else { native_rate };
+
     println!(
-        "Recording {} seconds at {} Hz...",
+        "Recording {} seconds at {} Hz{}...",
         duration_secs,
-        capture.sample_rate()
+        native_rate,
+        if resample { format!(" (resampling to {} Hz)", WHISPER_SAMPLE_RATE) } else { String::new() }
     );
 
     let pb = ProgressBar::new(duration_secs);
@@ -316,14 +324,26 @@ async fn record_audio(duration_secs: u64, output: PathBuf, device: Option<String
     progress_handle.abort();
     pb.finish_with_message("Recording complete");
 
+    // Resample if requested
+    let (final_samples, final_rate) = if resample && native_rate != WHISPER_SAMPLE_RATE {
+        println!("Resampling {} Hz -> {} Hz...", native_rate, WHISPER_SAMPLE_RATE);
+        let resampled = resample_to_whisper(&audio.samples, native_rate)
+            .map_err(|e| anyhow::anyhow!("Resampling failed: {}", e))?;
+        println!("Resampled {} -> {} samples", audio.samples.len(), resampled.len());
+        (resampled, WHISPER_SAMPLE_RATE)
+    } else {
+        (audio.samples, native_rate)
+    };
+
     // Write to WAV file
     println!("Writing to {:?}...", output);
-    write_wav(&output, &audio.samples, audio.sample_rate)?;
+    write_wav(&output, &final_samples, final_rate)?;
 
     let file_size = std::fs::metadata(&output)?.len();
     println!(
-        "Saved {} samples ({}) to {:?}",
-        audio.samples.len(),
+        "Saved {} samples @ {} Hz ({}) to {:?}",
+        final_samples.len(),
+        target_rate,
         format_bytes(file_size),
         output
     );

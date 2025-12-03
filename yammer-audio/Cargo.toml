@@ -12,3 +12,4 @@ tracing.workspace = true
 cpal.workspace = true
 hound.workspace = true
 ringbuf.workspace = true
+rubato.workspace = true
