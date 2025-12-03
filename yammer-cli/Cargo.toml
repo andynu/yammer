@@ -1,0 +1,18 @@
+[package]
+name = "yammer-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "yammer"
+path = "src/main.rs"
+
+[dependencies]
+yammer-core = { path = "../yammer-core" }
+yammer-audio = { path = "../yammer-audio" }
+yammer-stt = { path = "../yammer-stt" }
+yammer-llm = { path = "../yammer-llm" }
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

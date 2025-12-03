@@ -1,0 +1,11 @@
+[package]
+name = "yammer-audio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+yammer-core = { path = "../yammer-core" }
+thiserror.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
