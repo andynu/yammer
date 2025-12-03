@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use yammer_audio::{AudioCapture, resample_to_whisper, write_wav, WHISPER_SAMPLE_RATE};
+use yammer_audio::{AudioCapture, resample_to_whisper, write_wav, Vad, WHISPER_SAMPLE_RATE};
 use yammer_core::{
     format_bytes, get_default_models, get_model_registry, DownloadManager, ModelStatus,
 };
@@ -64,6 +64,21 @@ enum Commands {
         #[arg(long)]
         resample: bool,
     },
+
+    /// Test voice activity detection in real-time
+    VadTest {
+        /// VAD threshold (RMS level, default 0.01)
+        #[arg(long, default_value = "0.01")]
+        threshold: f32,
+
+        /// Duration to run in seconds (0 = until Ctrl+C)
+        #[arg(long, default_value = "30")]
+        duration: u64,
+
+        /// Audio device to use
+        #[arg(long)]
+        device: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -88,6 +103,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Record { duration, output, device, resample }) => {
             record_audio(duration, output, device, resample).await?;
+        }
+        Some(Commands::VadTest { threshold, duration, device }) => {
+            vad_test(threshold, duration, device).await?;
         }
         None => {
             println!("yammer - Linux dictation app");
@@ -349,5 +367,68 @@ async fn record_audio(duration_secs: u64, output: PathBuf, device: Option<String
     );
     println!("\nPlay with: aplay {:?}", output);
 
+    Ok(())
+}
+
+async fn vad_test(threshold: f32, duration_secs: u64, device: Option<String>) -> Result<()> {
+
+    let capture = if let Some(ref device_name) = device {
+        println!("Using device: {}", device_name);
+        AudioCapture::with_device(device_name)?
+    } else {
+        AudioCapture::new()?
+    };
+
+    let sample_rate = capture.sample_rate();
+    println!("VAD Test - {} Hz, threshold: {}", sample_rate, threshold);
+    println!("Speak to test. Press Ctrl+C to stop.\n");
+
+    // Frame size for VAD (~50ms)
+    let frame_samples = (sample_rate as f32 * 0.05) as usize;
+
+    let mut vad = Vad::with_threshold(threshold);
+    let mut last_state = yammer_audio::VadState::Silence;
+    let mut speech_start_time = std::time::Instant::now();
+
+    let duration = Duration::from_secs(duration_secs);
+    let audio = capture.record_duration(duration).await?;
+
+    // Process in frames
+    for (i, frame) in audio.samples.chunks(frame_samples).enumerate() {
+        let (state, _changed) = vad.process_frame(frame);
+        let rms = Vad::calculate_rms(frame);
+        let time_ms = (i * frame_samples) as f32 / sample_rate as f32 * 1000.0;
+
+        // Print state changes
+        if state != last_state {
+            let state_str = match state {
+                yammer_audio::VadState::Silence => "QUIET",
+                yammer_audio::VadState::MaybeSpeech => "maybe speech...",
+                yammer_audio::VadState::Speech => ">>> SPEECH <<<",
+                yammer_audio::VadState::MaybeSilence => "maybe quiet...",
+            };
+
+            if state == yammer_audio::VadState::Speech {
+                speech_start_time = std::time::Instant::now();
+            }
+
+            let duration_info = if last_state == yammer_audio::VadState::MaybeSilence
+                && state == yammer_audio::VadState::Silence
+            {
+                format!(" (speech lasted {:.1}s)", speech_start_time.elapsed().as_secs_f32())
+            } else {
+                String::new()
+            };
+
+            println!(
+                "[{:8.1}ms] RMS: {:.4} -> {}{}",
+                time_ms, rms, state_str, duration_info
+            );
+
+            last_state = state;
+        }
+    }
+
+    println!("\nVAD test complete.");
     Ok(())
 }
