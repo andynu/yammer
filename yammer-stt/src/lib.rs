@@ -4,4 +4,7 @@
 
 pub mod transcriber;
 
-pub use transcriber::Transcriber;
+pub use transcriber::{
+    load_wav_16k, TranscribeError, TranscribeResult, Transcriber, Transcript, TranscriptSegment,
+    WHISPER_SAMPLE_RATE,
+};

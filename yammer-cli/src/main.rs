@@ -12,8 +12,9 @@ use std::time::Duration;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use yammer_audio::{AudioCapture, resample_to_whisper, write_wav, Vad, WHISPER_SAMPLE_RATE};
 use yammer_core::{
-    format_bytes, get_default_models, get_model_registry, DownloadManager, ModelStatus,
+    format_bytes, get_default_models, get_model_registry, DownloadManager, ModelStatus, ModelType,
 };
+use yammer_stt::Transcriber;
 
 #[derive(Parser)]
 #[command(name = "yammer")]
@@ -79,6 +80,20 @@ enum Commands {
         #[arg(long)]
         device: Option<String>,
     },
+
+    /// Transcribe a WAV file using Whisper
+    Transcribe {
+        /// Path to WAV file (must be 16kHz mono)
+        file: PathBuf,
+
+        /// Path to Whisper model file (auto-detected from downloaded models if not specified)
+        #[arg(long)]
+        model: Option<PathBuf>,
+
+        /// Show timestamps
+        #[arg(long, short)]
+        timestamps: bool,
+    },
 }
 
 #[tokio::main]
@@ -106,6 +121,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::VadTest { threshold, duration, device }) => {
             vad_test(threshold, duration, device).await?;
+        }
+        Some(Commands::Transcribe { file, model, timestamps }) => {
+            transcribe_file(file, model, timestamps).await?;
         }
         None => {
             println!("yammer - Linux dictation app");
@@ -430,5 +448,58 @@ async fn vad_test(threshold: f32, duration_secs: u64, device: Option<String>) ->
     }
 
     println!("\nVAD test complete.");
+    Ok(())
+}
+
+async fn transcribe_file(file: PathBuf, model_path: Option<PathBuf>, timestamps: bool) -> Result<()> {
+    // Find model path
+    let model = if let Some(path) = model_path {
+        path
+    } else {
+        // Auto-detect from downloaded models
+        let manager = DownloadManager::new(DownloadManager::default_model_dir());
+        let registry = get_model_registry();
+
+        // Find a downloaded Whisper model
+        let whisper_model = registry
+            .iter()
+            .find(|m| m.model_type == ModelType::Whisper && {
+                let status = tokio::runtime::Handle::current()
+                    .block_on(manager.check_status(m));
+                matches!(status, ModelStatus::Ready { .. })
+            });
+
+        match whisper_model {
+            Some(m) => {
+                let status = manager.check_status(m).await;
+                if let ModelStatus::Ready { path } = status {
+                    println!("Using model: {} ({:?})", m.name, path);
+                    path
+                } else {
+                    anyhow::bail!("Model not ready");
+                }
+            }
+            None => {
+                println!("No Whisper model found. Download one first:");
+                println!("  yammer download-models");
+                anyhow::bail!("No Whisper model available");
+            }
+        }
+    };
+
+    println!("Loading Whisper model...");
+    let transcriber = Transcriber::new(&model)?;
+
+    println!("Transcribing {:?}...\n", file);
+    let transcript = transcriber.transcribe_file(&file)?;
+
+    if timestamps {
+        for segment in &transcript.segments {
+            println!("{}", segment);
+        }
+    } else {
+        println!("{}", transcript.text());
+    }
+
     Ok(())
 }

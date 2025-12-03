@@ -9,3 +9,5 @@ thiserror.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+whisper-rs.workspace = true
+hound.workspace = true
