@@ -98,14 +98,18 @@ html, body {
   font-style: italic;
 }
 
-/* Waveform visualization (placeholder) */
-.waveform {
+/* Waveform visualization */
+.waveform-container {
   height: 40px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.3);
   border-radius: 8px;
-  display: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
 }
 
-.waveform.active {
+#waveform {
   display: block;
 }
