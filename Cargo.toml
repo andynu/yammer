@@ -6,6 +6,7 @@ members = [
     "yammer-stt",
     "yammer-llm",
     "yammer-cli",
+    "yammer-app/src-tauri",
 ]
 
 [workspace.package]
