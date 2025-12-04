@@ -4,9 +4,29 @@ This guide walks you through testing the core audio capture, voice activity dete
 
 ## Prerequisites
 
+### Critical Dependency: clang (Required for LLM)
+
+If you get a build error about `stdbool.h` or `llama_cpp_sys`, you need to install clang:
+
+```bash
+sudo apt install clang libclang-dev
+```
+
+**Without clang installed**, you can still test everything except LLM text correction:
+
+```bash
+# Build without LLM support
+cargo build --workspace --exclude yammer-llm
+
+# Or run commands directly
+cargo run -p yammer-cli list-models
+```
+
+### Check Models
+
 ```bash
 # Check Whisper model is downloaded
-cargo run --bin yammer list-models
+cargo run -p yammer-cli list-models
 ```
 
 If no Whisper model is downloaded:
