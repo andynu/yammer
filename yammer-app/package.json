@@ -1,0 +1,18 @@
+{
+  "name": "yammer-app",
+  "version": "0.1.0",
+  "description": "Linux dictation app - local speech-to-text with LLM correction",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@tauri-apps/api": "^2",
+    "vite": "^5"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-v2.0.0/packages/tauri-utils/schema/capability.schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for Yammer",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open"
+  ]
+}
