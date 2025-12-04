@@ -14,8 +14,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // State management
   let state = {
-    status: 'idle', // idle, listening, processing, error
-    transcript: ''
+    status: 'idle', // idle, listening, processing, correcting, done, error
+    transcript: '',
+    isPartial: false
   };
 
   // Waveform visualization
@@ -55,6 +56,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       idle: 'Ready',
       listening: 'Listening...',
       processing: 'Processing...',
+      correcting: 'Correcting...',
+      done: 'Done',
       error: 'Error'
     };
     statusText.textContent = statusLabels[state.status] || 'Ready';
@@ -63,9 +66,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.transcript) {
       transcriptText.textContent = state.transcript;
       transcriptText.classList.remove('placeholder');
+
+      // Mark as partial if still processing
+      if (state.isPartial) {
+        transcriptText.classList.add('partial');
+      } else {
+        transcriptText.classList.remove('partial');
+      }
     } else {
       transcriptText.textContent = 'Press hotkey to start dictating...';
       transcriptText.classList.add('placeholder');
+      transcriptText.classList.remove('partial');
     }
   }
 
@@ -108,6 +119,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (e) {
       console.error('Failed to simulate audio:', e);
     }
+  };
+
+  // Test function to cycle through states (remove in production)
+  window.testStates = () => {
+    const states = [
+      { status: 'listening', transcript: '', isPartial: false },
+      { status: 'processing', transcript: 'This is a test...', isPartial: true },
+      { status: 'correcting', transcript: 'This is a test transcript', isPartial: false },
+      { status: 'done', transcript: 'This is a test transcript.', isPartial: false },
+      { status: 'idle', transcript: '', isPartial: false }
+    ];
+
+    let index = 0;
+    const interval = setInterval(() => {
+      window.setYammerState(states[index]);
+      console.log('State:', states[index].status);
+      index++;
+      if (index >= states.length) {
+        clearInterval(interval);
+      }
+    }, 2000);
   };
 
   // Initial render
