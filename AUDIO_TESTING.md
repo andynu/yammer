@@ -6,12 +6,12 @@ This guide walks you through testing the core audio capture, voice activity dete
 
 ```bash
 # Check Whisper model is downloaded
-cargo run --bin yammer-cli list-models
+cargo run --bin yammer list-models
 ```
 
 If no Whisper model is downloaded:
 ```bash
-cargo run --bin yammer-cli download-models
+cargo run --bin yammer download-models
 ```
 
 This will download:
@@ -22,7 +22,7 @@ This will download:
 
 ### List Available Models
 ```bash
-cargo run --bin yammer-cli list-models
+cargo run --bin yammer list-models
 ```
 
 Shows:
@@ -32,12 +32,12 @@ Shows:
 
 ### Download Specific Model
 ```bash
-cargo run --bin yammer-cli download-models --model whisper-tiny-en
+cargo run --bin yammer download-models --model whisper-tiny-en
 ```
 
 ### Download All Models
 ```bash
-cargo run --bin yammer-cli download-models --all
+cargo run --bin yammer download-models --all
 ```
 
 **Note**: LLM model download will work, but LLM inference requires clang to be installed first.
@@ -46,7 +46,7 @@ cargo run --bin yammer-cli download-models --all
 
 ### List Audio Devices
 ```bash
-cargo run --bin yammer-cli list-devices
+cargo run --bin yammer list-devices
 ```
 
 Shows:
@@ -56,7 +56,7 @@ Shows:
 
 ### Record Audio (5 seconds)
 ```bash
-cargo run --bin yammer-cli record --duration 5 --output test.wav
+cargo run --bin yammer record --duration 5 --output test.wav
 ```
 
 Options:
@@ -67,7 +67,7 @@ Options:
 
 ### Record with Resampling
 ```bash
-cargo run --bin yammer-cli record --duration 5 --output test.wav --resample
+cargo run --bin yammer record --duration 5 --output test.wav --resample
 ```
 
 This captures at native sample rate, then resamples to 16kHz mono (required for Whisper).
@@ -81,7 +81,7 @@ aplay test.wav
 
 Test VAD in real-time:
 ```bash
-cargo run --bin yammer-cli vad-test --duration 30 --threshold 0.01
+cargo run --bin yammer vad-test --duration 30 --threshold 0.01
 ```
 
 What to watch for:
@@ -101,10 +101,10 @@ The VAD uses hysteresis to avoid false triggers:
 
 ```bash
 # Very sensitive
-cargo run --bin yammer-cli vad-test --threshold 0.005
+cargo run --bin yammer vad-test --threshold 0.005
 
 # Less sensitive
-cargo run --bin yammer-cli vad-test --threshold 0.02
+cargo run --bin yammer vad-test --threshold 0.02
 ```
 
 ## Phase 3: Speech-to-Text
@@ -113,26 +113,26 @@ cargo run --bin yammer-cli vad-test --threshold 0.02
 
 First, record something:
 ```bash
-cargo run --bin yammer-cli record --duration 10 --output speech.wav --resample
+cargo run --bin yammer record --duration 10 --output speech.wav --resample
 ```
 
 Then transcribe it:
 ```bash
-cargo run --bin yammer-cli transcribe speech.wav
+cargo run --bin yammer transcribe speech.wav
 ```
 
 Output shows the transcribed text.
 
 ### Transcribe with Timestamps
 ```bash
-cargo run --bin yammer-cli transcribe speech.wav --timestamps
+cargo run --bin yammer transcribe speech.wav --timestamps
 ```
 
 Shows segment-by-segment transcription with time ranges.
 
 ### Transcribe with Specific Model
 ```bash
-cargo run --bin yammer-cli transcribe speech.wav --model /path/to/model.bin
+cargo run --bin yammer transcribe speech.wav --model /path/to/model.bin
 ```
 
 By default, it auto-detects the downloaded Whisper model.
@@ -142,7 +142,7 @@ By default, it auto-detects the downloaded Whisper model.
 **This is the real-time transcription engine:**
 
 ```bash
-cargo run --bin yammer-cli dictate
+cargo run --bin yammer dictate
 ```
 
 What happens:
@@ -154,17 +154,17 @@ What happens:
 
 **With custom threshold:**
 ```bash
-cargo run --bin yammer-cli dictate --threshold 0.015
+cargo run --bin yammer dictate --threshold 0.015
 ```
 
 **With time limit (auto-stop after 60 seconds):**
 ```bash
-cargo run --bin yammer-cli dictate --duration 60
+cargo run --bin yammer dictate --duration 60
 ```
 
 **With specific audio device:**
 ```bash
-cargo run --bin yammer-cli dictate --device "Blue Yeti"
+cargo run --bin yammer dictate --device "Blue Yeti"
 ```
 
 ### How Dictation Mode Works
@@ -190,7 +190,7 @@ sudo apt install clang libclang-dev
 
 Then you'll be able to test:
 ```bash
-cargo run --bin yammer-cli correct "this is some transcribed text with errors"
+cargo run --bin yammer correct "this is some transcribed text with errors"
 ```
 
 The LLM will:
@@ -207,16 +207,16 @@ The LLM will:
 echo $XDG_SESSION_TYPE  # Should show: x11
 
 # List audio devices
-cargo run --bin yammer-cli list-devices
+cargo run --bin yammer list-devices
 
 # Check models
-cargo run --bin yammer-cli list-models
+cargo run --bin yammer list-models
 ```
 
 ### 2. Test Audio Capture
 ```bash
 # Record 5 seconds
-cargo run --bin yammer-cli record --duration 5 --output test.wav --resample
+cargo run --bin yammer record --duration 5 --output test.wav --resample
 
 # Play it back
 aplay test.wav
@@ -225,25 +225,25 @@ aplay test.wav
 ### 3. Test VAD
 ```bash
 # Run VAD test, speak and watch state changes
-cargo run --bin yammer-cli vad-test --duration 30
+cargo run --bin yammer vad-test --duration 30
 
 # Try different thresholds to find what works for your mic/environment
-cargo run --bin yammer-cli vad-test --duration 20 --threshold 0.015
+cargo run --bin yammer vad-test --duration 20 --threshold 0.015
 ```
 
 ### 4. Test Transcription
 ```bash
 # Record a longer sample
-cargo run --bin yammer-cli record --duration 10 --output speech.wav --resample
+cargo run --bin yammer record --duration 10 --output speech.wav --resample
 
 # Transcribe it
-cargo run --bin yammer-cli transcribe speech.wav
+cargo run --bin yammer transcribe speech.wav
 ```
 
 ### 5. Test Live Dictation
 ```bash
 # Start live dictation
-cargo run --bin yammer-cli dictate
+cargo run --bin yammer dictate
 
 # Speak clearly: "The quick brown fox jumps over the lazy dog."
 # Wait for silence
@@ -332,7 +332,7 @@ sudo apt install libasound2-dev
 ### "Model not found" Error
 ```bash
 # Download the default models
-cargo run --bin yammer-cli download-models
+cargo run --bin yammer download-models
 ```
 
 ### Audio Clicks/Pops in Recording
