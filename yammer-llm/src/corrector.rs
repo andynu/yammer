@@ -78,8 +78,7 @@ impl Corrector {
     pub fn with_config(model_path: &Path, config: CorrectorConfig) -> CorrectorResult<Self> {
         info!("Loading LLM model from {:?}", model_path);
 
-        let mut params = LlamaParams::default();
-        params.set_n_ctx(config.context_size);
+        let params = LlamaParams::default();
 
         let model = LlamaModel::load_from_file(model_path, params)
             .map_err(|e| CorrectorError::ModelLoad(e.to_string()))?;
@@ -96,17 +95,27 @@ impl Corrector {
         let prompt = format!("{}{}{}", CORRECTION_PROMPT, text, CORRECTION_SUFFIX);
         debug!("Correction prompt: {}", prompt);
 
-        // Create a session for this correction
-        let mut session = self.model.create_session(SessionParams::default())
+        // Create a session for this correction with configured context size
+        let mut session_params = SessionParams::default();
+        session_params.n_ctx = self.config.context_size;
+
+        let mut session = self.model.create_session(session_params)
             .map_err(|e| CorrectorError::SessionCreate(e.to_string()))?;
 
         // Feed the prompt
         session.advance_context(&prompt)
             .map_err(|e| CorrectorError::Generation(e.to_string()))?;
 
-        // Generate the correction
-        let sampler = StandardSampler::default()
-            .with_temp(self.config.temperature);
+        // Generate the correction with configured temperature
+        use llama_cpp::standard_sampler::SamplerStage;
+        let sampler = StandardSampler::new_softmax(
+            vec![
+                SamplerStage::Temperature(self.config.temperature),
+                SamplerStage::TopP(0.95),
+                SamplerStage::MinP(0.05),
+            ],
+            1 // min_keep
+        );
 
         let completions = session
             .start_completing_with(sampler, self.config.max_tokens)
