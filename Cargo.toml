@@ -35,8 +35,21 @@ cpal = "0.15"
 hound = "3"
 ringbuf = "0.4"
 rubato = "0.16"
-whisper-rs = { version = "0.14", features = ["cuda"] }
 ctrlc = "3"
-# FIXME: yam-4xb - both whisper-rs and llama_cpp bundle ggml-cuda, causing duplicate symbols
-# Disable CUDA for LLM until we find compatible versions or separate binaries
-llama_cpp = { version = "0.3" }
+
+# GPU Acceleration Configuration
+# -----------------------------
+# whisper-rs and llama_cpp both bundle ggml with CUDA support. When both enable CUDA,
+# the linker fails with duplicate symbol errors (ggml_cuda_error, etc.) because each
+# library compiles its own copy of ggml-cuda.cu.
+#
+# Current workaround: Enable CUDA only for whisper-rs (STT) since real-time audio
+# transcription benefits most from GPU acceleration. LLM runs on CPU which is
+# acceptable for text cleanup tasks.
+#
+# Future options:
+# - Vulkan backend: Both libraries support vulkan feature (may avoid conflicts)
+# - Separate processes: Run STT and LLM in different processes
+# - Upstream fix: Wait for ggml to be a proper shared dependency
+whisper-rs = { version = "0.14", features = ["cuda"] }
+llama_cpp = { version = "0.3" }  # CPU-only to avoid duplicate CUDA symbols
