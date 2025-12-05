@@ -94,6 +94,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // Listen for global hotkey dictation toggle (Super+D)
+  await listen('dictation-toggle', () => {
+    console.log('Dictation toggle hotkey received');
+
+    // Toggle between idle and listening states
+    if (state.status === 'idle' || state.status === 'done' || state.status === 'error') {
+      window.setYammerState({ status: 'listening', transcript: '', isPartial: false });
+    } else if (state.status === 'listening') {
+      // Stop listening and start processing
+      window.setYammerState({ status: 'processing', isPartial: true });
+      // TODO: Wire up actual STT processing here
+    }
+  });
+
   // Animate waveform decay when no audio
   setInterval(() => {
     if (state.status !== 'listening') {
