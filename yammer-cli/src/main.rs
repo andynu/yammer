@@ -29,6 +29,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Launch the GUI application
+    Gui,
+
     /// Download required AI models
     DownloadModels {
         /// Only show what would be downloaded, don't actually download
@@ -194,6 +197,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Some(Commands::Gui) => {
+            launch_gui()?;
+        }
         Some(Commands::DownloadModels { dry_run, all, model }) => {
             download_models(dry_run, all, model).await?;
         }
@@ -239,6 +245,36 @@ async fn main() -> Result<()> {
             println!("Run with --help for usage");
         }
     }
+
+    Ok(())
+}
+
+fn launch_gui() -> Result<()> {
+    use std::process::Command;
+
+    // Find the GUI binary - look next to current executable first
+    let current_exe = std::env::current_exe()?;
+    let exe_dir = current_exe.parent().ok_or_else(|| anyhow::anyhow!("Cannot find executable directory"))?;
+
+    // Try yammer-app in same directory as current binary
+    let gui_binary = exe_dir.join("yammer-app");
+
+    if !gui_binary.exists() {
+        // Provide helpful error message
+        eprintln!("GUI binary not found at: {:?}", gui_binary);
+        eprintln!("\nTo build the GUI:");
+        eprintln!("  cd yammer-app && npm run tauri build");
+        eprintln!("\nOr for development:");
+        eprintln!("  cd yammer-app && npm run tauri dev");
+        anyhow::bail!("yammer-app binary not found");
+    }
+
+    println!("Launching Yammer GUI...");
+
+    // Spawn detached so CLI can exit
+    Command::new(&gui_binary)
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to launch GUI: {}", e))?;
 
     Ok(())
 }
