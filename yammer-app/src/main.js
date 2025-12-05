@@ -150,8 +150,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   const transcriptText = document.querySelector('.transcript-text');
+  const transcriptArea = document.querySelector('.transcript-area');
   const waveformCanvas = document.getElementById('waveform');
   const waveformCtx = waveformCanvas.getContext('2d');
+
+  // Click on transcript to copy to clipboard
+  transcriptArea.addEventListener('click', async (e) => {
+    e.stopPropagation(); // Don't trigger window drag
+    if (state.transcript && state.transcript.trim()) {
+      try {
+        await navigator.clipboard.writeText(state.transcript);
+        console.log('Copied to clipboard:', state.transcript);
+
+        // Visual feedback - briefly highlight
+        transcriptText.classList.add('copied');
+        setTimeout(() => transcriptText.classList.remove('copied'), 300);
+      } catch (err) {
+        console.error('Failed to copy:', err);
+      }
+    }
+  });
 
   // State management
   let state = {

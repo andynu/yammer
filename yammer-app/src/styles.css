@@ -116,13 +116,21 @@ html, body {
   letter-spacing: 0.5px;
 }
 
-/* Transcript display area */
+/* Transcript display area - clickable to copy */
 .transcript-area {
   flex: 1;
   display: flex;
   align-items: center;
   overflow: hidden;
-  pointer-events: none;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  transition: background-color 0.2s ease;
+}
+
+.transcript-area:hover {
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .transcript-text {
@@ -143,6 +151,10 @@ html, body {
 .transcript-text.placeholder {
   color: #666;
   font-style: italic;
+}
+
+.transcript-text.copied {
+  color: #4caf50;
 }
 
 /* Waveform visualization - clickable to toggle dictation */
