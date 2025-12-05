@@ -36,4 +36,6 @@ ringbuf = "0.4"
 rubato = "0.16"
 whisper-rs = { version = "0.14", features = ["cuda"] }
 ctrlc = "3"
-llama_cpp = { version = "0.3", features = ["cuda"] }
+# FIXME: yam-4xb - both whisper-rs and llama_cpp bundle ggml-cuda, causing duplicate symbols
+# Disable CUDA for LLM until we find compatible versions or separate binaries
+llama_cpp = { version = "0.3" }
