@@ -85,13 +85,35 @@ pub fn get_model_registry() -> Vec<ModelInfo> {
         },
         // LLM models (GGUF format)
         ModelInfo {
-            id: "phi-3-mini-4k".to_string(),
-            name: "Phi-3-Mini 4K (Grammar/Punctuation)".to_string(),
+            id: "tinyllama-1.1b".to_string(),
+            name: "TinyLlama 1.1B Chat (Grammar/Punctuation)".to_string(),
             model_type: ModelType::Llm,
-            url: "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf".to_string(),
-            size_bytes: 2_361_278_464, // ~2.2GB (Q4 quantization)
+            url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf".to_string(),
+            size_bytes: 669_000_000, // ~669MB (Q4_K_M quantization)
             sha256: None,
-            filename: "Phi-3-mini-4k-instruct-q4.gguf".to_string(),
+            filename: "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf".to_string(),
+        },
+        // NOTE: These models are incompatible with llama_cpp Rust 0.3:
+        // - Phi-3: unknown architecture 'phi3'
+        // - Gemma2: unknown architecture 'gemma2'
+        // - Qwen2: tied embeddings issue (missing output.weight tensor)
+        // ModelInfo {
+        //     id: "phi-3-mini-4k".to_string(),
+        //     name: "Phi-3-Mini 4K (Grammar/Punctuation)".to_string(),
+        //     model_type: ModelType::Llm,
+        //     url: "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf".to_string(),
+        //     size_bytes: 2_393_231_072, // ~2.3GB (actual size from HuggingFace)
+        //     sha256: None,
+        //     filename: "Phi-3-mini-4k-instruct-q4.gguf".to_string(),
+        // },
+        ModelInfo {
+            id: "gemma-2-2b".to_string(),
+            name: "Gemma 2 2B (Grammar/Punctuation)".to_string(),
+            model_type: ModelType::Llm,
+            url: "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf".to_string(),
+            size_bytes: 1_708_582_752, // ~1.6GB (actual size from HuggingFace)
+            sha256: None,
+            filename: "gemma-2-2b-it-Q4_K_M.gguf".to_string(),
         },
         // NOTE: Qwen2 models currently incompatible with llama.cpp 0.3 (missing output.weight tensor)
         // See: https://github.com/QwenLM/Qwen2.5/issues/255
@@ -109,5 +131,5 @@ pub fn get_model_registry() -> Vec<ModelInfo> {
 
 /// Get default models for a fresh installation
 pub fn get_default_models() -> Vec<&'static str> {
-    vec!["whisper-tiny.en", "phi-3-mini-4k"]
+    vec!["whisper-tiny.en", "tinyllama-1.1b"]
 }
