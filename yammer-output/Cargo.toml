@@ -1,0 +1,9 @@
+[package]
+name = "yammer-output"
+version.workspace = true
+edition.workspace = true
+description = "Text output for yammer dictation app"
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true

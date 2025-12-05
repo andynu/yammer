@@ -5,6 +5,7 @@ members = [
     "yammer-audio",
     "yammer-stt",
     "yammer-llm",
+    "yammer-output",
     "yammer-cli",
     "yammer-app/src-tauri",
 ]

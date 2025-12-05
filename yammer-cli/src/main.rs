@@ -15,6 +15,7 @@ use yammer_core::{
     format_bytes, get_default_models, get_model_registry, DownloadManager, ModelStatus, ModelType,
 };
 use yammer_llm::Corrector;
+use yammer_output::{TextOutput, OutputMethod};
 use yammer_stt::Transcriber;
 
 #[derive(Parser)]
@@ -135,6 +136,20 @@ enum Commands {
         #[arg(long, short)]
         watch: bool,
     },
+
+    /// Type text into the focused application via xdotool
+    TypeText {
+        /// Text to type
+        text: String,
+
+        /// Use clipboard paste instead of simulated keystrokes
+        #[arg(long)]
+        clipboard: bool,
+
+        /// Delay before typing (seconds, to switch focus)
+        #[arg(long, default_value = "2")]
+        delay: u64,
+    },
 }
 
 #[tokio::main]
@@ -174,6 +189,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::GpuInfo { watch }) => {
             gpu_info(watch).await?;
+        }
+        Some(Commands::TypeText { text, clipboard, delay }) => {
+            type_text_cmd(text, clipboard, delay).await?;
         }
         None => {
             println!("yammer - Linux dictation app");
@@ -875,6 +893,37 @@ async fn gpu_info(watch: bool) -> Result<()> {
     } else {
         print_gpu_info()?;
     }
+
+    Ok(())
+}
+
+async fn type_text_cmd(text: String, clipboard: bool, delay: u64) -> Result<()> {
+    // Check xdotool is available
+    TextOutput::check_xdotool()?;
+
+    let method = if clipboard {
+        OutputMethod::Clipboard
+    } else {
+        OutputMethod::Type
+    };
+
+    let output = TextOutput::with_method(method);
+
+    if delay > 0 {
+        println!(
+            "Will type {} characters in {} seconds. Switch to target window...",
+            text.len(),
+            delay
+        );
+        for i in (1..=delay).rev() {
+            println!("  {}...", i);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    println!("Typing now!");
+    output.output(&text)?;
+    println!("Done.");
 
     Ok(())
 }

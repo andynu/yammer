@@ -12,6 +12,7 @@ yammer-core = { path = "../yammer-core" }
 yammer-audio = { path = "../yammer-audio" }
 yammer-stt = { path = "../yammer-stt" }
 yammer-llm = { path = "../yammer-llm" }
+yammer-output = { path = "../yammer-output" }
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
