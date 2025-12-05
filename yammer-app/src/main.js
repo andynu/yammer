@@ -1,4 +1,4 @@
-// Yammer frontend - minimal for now
+// Yammer frontend - dictation UI
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -16,7 +16,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   let state = {
     status: 'idle', // idle, listening, processing, correcting, done, error
     transcript: '',
-    isPartial: false
+    isPartial: false,
+    pipelineInitialized: false,
+    isRunning: false
   };
 
   // Waveform visualization
@@ -74,7 +76,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         transcriptText.classList.remove('partial');
       }
     } else {
-      transcriptText.textContent = 'Press hotkey to start dictating...';
+      transcriptText.textContent = state.pipelineInitialized
+        ? 'Press Ctrl+Alt+D to start dictating...'
+        : 'Initializing...';
       transcriptText.classList.add('placeholder');
       transcriptText.classList.remove('partial');
     }
@@ -84,31 +88,103 @@ document.addEventListener('DOMContentLoaded', async () => {
   await listen('audio-samples', (event) => {
     const samples = event.payload;
     if (Array.isArray(samples) && samples.length > 0) {
-      // Downsample to BAR_COUNT bars
-      const step = Math.floor(samples.length / BAR_COUNT);
-      for (let i = 0; i < BAR_COUNT; i++) {
-        const idx = i * step;
-        audioSamples[i] = Math.abs(samples[idx] || 0);
+      // Downsample to BAR_COUNT bars if needed
+      if (samples.length === BAR_COUNT) {
+        audioSamples = samples;
+      } else {
+        const step = Math.floor(samples.length / BAR_COUNT);
+        for (let i = 0; i < BAR_COUNT; i++) {
+          const idx = i * step;
+          audioSamples[i] = Math.abs(samples[idx] || 0);
+        }
       }
       drawWaveform();
     }
   });
 
-  // Listen for global hotkey dictation toggle (Super+D)
-  await listen('dictation-toggle', () => {
+  // Listen for pipeline state changes from backend
+  await listen('pipeline-state', (event) => {
+    const newState = event.payload;
+    console.log('Pipeline state:', newState);
+
+    state.status = newState;
+    state.isRunning = newState === 'listening' || newState === 'processing' || newState === 'correcting';
+
+    // Clear transcript on new listening session
+    if (newState === 'listening') {
+      state.transcript = '';
+      state.isPartial = false;
+    }
+
+    // Return to idle after showing done/error briefly
+    if (newState === 'done' || newState === 'error') {
+      setTimeout(() => {
+        if (state.status === newState) {
+          state.status = 'idle';
+          updateUI();
+        }
+      }, 2000);
+    }
+
+    updateUI();
+  });
+
+  // Listen for transcript updates
+  await listen('transcript', (event) => {
+    const { text, isPartial } = event.payload;
+    console.log('Transcript:', text, 'isPartial:', isPartial);
+
+    state.transcript = text;
+    state.isPartial = isPartial;
+    updateUI();
+  });
+
+  // Listen for pipeline errors
+  await listen('pipeline-error', (event) => {
+    const error = event.payload;
+    console.error('Pipeline error:', error);
+
+    state.status = 'error';
+    state.transcript = `Error: ${error}`;
+    state.isPartial = false;
+    updateUI();
+  });
+
+  // Listen for global hotkey dictation toggle
+  await listen('dictation-toggle', async () => {
     console.log('Dictation toggle hotkey received');
 
-    // Toggle between idle and listening states
-    if (state.status === 'idle' || state.status === 'done' || state.status === 'error') {
-      window.setYammerState({ status: 'listening', transcript: '', isPartial: false });
-    } else if (state.status === 'listening') {
-      // Stop listening and start processing
-      window.setYammerState({ status: 'processing', isPartial: true });
-      // TODO: Wire up actual STT processing here
+    if (!state.pipelineInitialized) {
+      console.log('Pipeline not initialized, initializing first...');
+      try {
+        await initializePipeline();
+      } catch (e) {
+        console.error('Failed to initialize pipeline:', e);
+        state.status = 'error';
+        state.transcript = `Initialization failed: ${e}`;
+        updateUI();
+        return;
+      }
+    }
+
+    try {
+      // Toggle dictation via backend
+      const nowRunning = await invoke('toggle_dictation');
+      console.log('Dictation toggled, now running:', nowRunning);
+    } catch (e) {
+      console.error('Toggle dictation error:', e);
+      // If "already running", try stopping
+      if (e.includes('already in progress')) {
+        try {
+          await invoke('stop_dictation');
+        } catch (stopErr) {
+          console.error('Stop dictation error:', stopErr);
+        }
+      }
     }
   });
 
-  // Animate waveform decay when no audio
+  // Animate waveform decay when not listening
   setInterval(() => {
     if (state.status !== 'listening') {
       // Decay waveform bars toward zero
@@ -119,13 +195,38 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }, 50); // 20 fps decay
 
-  // Expose state setter for Tauri commands
+  // Initialize pipeline with models
+  async function initializePipeline() {
+    console.log('Checking models...');
+
+    // Check if models exist
+    const modelStatus = await invoke('check_models');
+    console.log('Model status:', modelStatus);
+
+    if (!modelStatus.whisper.exists) {
+      throw new Error(`Whisper model not found at ${modelStatus.whisper.path}. Run: yammer download-models`);
+    }
+
+    // Initialize pipeline
+    console.log('Initializing pipeline...');
+    await invoke('initialize_pipeline', {
+      whisperModel: null, // Use default
+      llmModel: null, // Use default
+      useCorrection: modelStatus.llm.exists // Enable if LLM model exists
+    });
+
+    state.pipelineInitialized = true;
+    console.log('Pipeline initialized successfully');
+    updateUI();
+  }
+
+  // Expose state setter for debugging
   window.setYammerState = (newState) => {
     state = { ...state, ...newState };
     updateUI();
   };
 
-  // Test function for waveform (remove in production)
+  // Test function for waveform (for debugging)
   window.testWaveform = async () => {
     try {
       await invoke('simulate_audio');
@@ -135,7 +236,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   };
 
-  // Test function to cycle through states (remove in production)
+  // Test function to cycle through states (for debugging)
   window.testStates = () => {
     const states = [
       { status: 'listening', transcript: '', isPartial: false },
@@ -158,12 +259,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Initial render
   updateUI();
-  drawWaveform(); // Draw initial empty waveform
+  drawWaveform();
 
-  // Auto-test waveform on load (remove in production)
-  setTimeout(() => {
-    window.testWaveform();
-    // Repeat every second for demo
-    setInterval(() => window.testWaveform(), 1000);
-  }, 1000);
+  // Auto-initialize pipeline on load
+  setTimeout(async () => {
+    try {
+      await initializePipeline();
+    } catch (e) {
+      console.error('Auto-initialization failed:', e);
+      state.transcript = `Ready. ${e.message || e}`;
+      updateUI();
+    }
+  }, 500);
 });

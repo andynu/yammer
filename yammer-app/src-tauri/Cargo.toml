@@ -19,6 +19,17 @@ tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+dirs = "5"
+tokio = { version = "1", features = ["sync", "macros", "rt-multi-thread", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Yammer crates
+yammer-audio = { path = "../../yammer-audio" }
+yammer-stt = { path = "../../yammer-stt" }
+yammer-llm = { path = "../../yammer-llm" }
+yammer-output = { path = "../../yammer-output" }
+yammer-core = { path = "../../yammer-core" }
 
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
 tauri-plugin-global-shortcut = "2"
