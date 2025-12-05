@@ -52,7 +52,7 @@ pub struct PipelineConfig {
     pub llm_model_path: Option<PathBuf>,
     pub use_llm_correction: bool,
     pub output_method: OutputMethod,
-    pub vad_threshold: f32,
+    pub vad_threshold: f64,
 }
 
 impl Default for PipelineConfig {
@@ -249,7 +249,7 @@ impl DictationPipeline {
             .map_err(|e| format!("Failed to start capture: {}", e))?;
 
         // VAD processor
-        let mut vad = VadProcessor::with_threshold(self.config.vad_threshold);
+        let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
         let mut all_samples: Vec<f32> = Vec::new();
         let mut speech_detected = false;
 
@@ -426,12 +426,6 @@ impl DictationPipeline {
         self.send_state(PipelineState::Done);
 
         Ok(())
-    }
-
-    /// Reset to idle state
-    pub fn reset(&self) {
-        self.cancel();
-        self.send_state(PipelineState::Idle);
     }
 }
 

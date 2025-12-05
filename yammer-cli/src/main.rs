@@ -12,7 +12,7 @@ use std::time::Duration;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use yammer_audio::{AudioCapture, resample_to_whisper, write_wav, Vad, VadEvent, VadProcessor, WHISPER_SAMPLE_RATE};
 use yammer_core::{
-    format_bytes, get_default_models, get_model_registry, DownloadManager, ModelStatus, ModelType,
+    format_bytes, get_default_models, get_model_registry, Config, DownloadManager, ModelStatus, ModelType,
 };
 use yammer_llm::Corrector;
 use yammer_output::{TextOutput, OutputMethod};
@@ -150,6 +150,21 @@ enum Commands {
         #[arg(long, default_value = "2")]
         delay: u64,
     },
+
+    /// Show or initialize configuration
+    Config {
+        /// Show current configuration as TOML
+        #[arg(long)]
+        show: bool,
+
+        /// Path to the config file (show path if not provided)
+        #[arg(long)]
+        path: bool,
+
+        /// Initialize default config file if it doesn't exist
+        #[arg(long)]
+        init: bool,
+    },
 }
 
 #[tokio::main]
@@ -192,6 +207,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::TypeText { text, clipboard, delay }) => {
             type_text_cmd(text, clipboard, delay).await?;
+        }
+        Some(Commands::Config { show, path, init }) => {
+            config_cmd(show, path, init)?;
         }
         None => {
             println!("yammer - Linux dictation app");
@@ -924,6 +942,54 @@ async fn type_text_cmd(text: String, clipboard: bool, delay: u64) -> Result<()> 
     println!("Typing now!");
     output.output(&text)?;
     println!("Done.");
+
+    Ok(())
+}
+
+fn config_cmd(show: bool, path: bool, init: bool) -> Result<()> {
+    let config_path = Config::default_path();
+
+    // If no flags, show overview
+    if !show && !path && !init {
+        println!("Configuration file: {:?}", config_path);
+        if config_path.exists() {
+            println!("Status: exists");
+            println!("\nUse --show to display contents");
+            println!("Use --path to print path only");
+        } else {
+            println!("Status: not found (using defaults)");
+            println!("\nUse --init to create default config");
+        }
+        return Ok(());
+    }
+
+    // --path: just print path
+    if path {
+        println!("{}", config_path.display());
+        return Ok(());
+    }
+
+    // --init: create default config if doesn't exist
+    if init {
+        if config_path.exists() {
+            println!("Config file already exists: {:?}", config_path);
+            println!("Remove it first if you want to reset to defaults.");
+        } else {
+            Config::ensure_default_exists()
+                .map_err(|e| anyhow::anyhow!("Failed to create config: {}", e))?;
+            println!("Created default config: {:?}", config_path);
+        }
+        return Ok(());
+    }
+
+    // --show: print current config as TOML
+    if show {
+        let config = Config::load();
+        let toml_str = config
+            .to_toml()
+            .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
+        println!("{}", toml_str);
+    }
 
     Ok(())
 }

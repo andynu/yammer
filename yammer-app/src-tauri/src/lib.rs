@@ -2,7 +2,6 @@
 
 mod pipeline;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -10,6 +9,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
 use pipeline::{DictationPipeline, PipelineConfig, PipelineEvent};
+use yammer_core::Config;
 use yammer_output::OutputMethod;
 
 /// Application state holding the pipeline and related resources
@@ -17,14 +17,6 @@ pub struct AppState {
     pipeline: Arc<Mutex<Option<DictationPipeline>>>,
     is_running: Arc<Mutex<bool>>,
     event_tx: mpsc::Sender<PipelineEvent>,
-}
-
-/// Get the default models directory
-fn get_models_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("yammer")
-        .join("models")
 }
 
 /// Initialize the pipeline with model paths
@@ -37,31 +29,39 @@ async fn initialize_pipeline(
 ) -> Result<(), String> {
     info!("Initializing pipeline...");
 
-    let models_dir = get_models_dir();
+    // Load configuration
+    let app_config = Config::load();
+    info!("Loaded config from {:?}", Config::default_path());
 
     // Determine whisper model path
     let whisper_path = whisper_model
-        .map(|m| models_dir.join(&m))
-        .unwrap_or_else(|| models_dir.join("ggml-tiny.en.bin"));
+        .map(|m| app_config.models.model_dir.join(&m))
+        .unwrap_or_else(|| app_config.whisper_model_path());
 
     // Determine LLM model path if correction enabled
     let llm_path = if use_correction {
         llm_model
-            .map(|m| models_dir.join(&m))
-            .or_else(|| Some(models_dir.join("tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf")))
+            .map(|m| app_config.models.model_dir.join(&m))
+            .or_else(|| app_config.llm_model_path())
     } else {
         None
     };
 
-    let config = PipelineConfig {
-        whisper_model_path: whisper_path,
-        llm_model_path: llm_path,
-        use_llm_correction: use_correction,
-        output_method: OutputMethod::Type,
-        vad_threshold: 0.01,
+    // Determine output method from config
+    let output_method = match app_config.output.method.as_str() {
+        "clipboard" => OutputMethod::Clipboard,
+        _ => OutputMethod::Type,
     };
 
-    let mut pipeline = DictationPipeline::new(config, state.event_tx.clone());
+    let pipeline_config = PipelineConfig {
+        whisper_model_path: whisper_path,
+        llm_model_path: llm_path,
+        use_llm_correction: use_correction && app_config.llm_enabled(),
+        output_method,
+        vad_threshold: app_config.audio.vad_threshold,
+    };
+
+    let mut pipeline = DictationPipeline::new(pipeline_config, state.event_tx.clone());
     pipeline.initialize()?;
 
     let mut pipeline_guard = state.pipeline.lock().await;
@@ -192,20 +192,24 @@ async fn get_pipeline_state(state: State<'_, AppState>) -> Result<String, String
 /// Check if models are downloaded
 #[tauri::command]
 async fn check_models() -> Result<serde_json::Value, String> {
-    let models_dir = get_models_dir();
+    let app_config = Config::load();
 
-    let whisper_exists = models_dir.join("ggml-tiny.en.bin").exists();
-    let llm_exists = models_dir.join("tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf").exists();
+    let whisper_path = app_config.whisper_model_path();
+    let whisper_exists = whisper_path.exists();
+
+    let llm_path = app_config.llm_model_path();
+    let llm_exists = llm_path.as_ref().is_some_and(|p| p.exists());
 
     Ok(serde_json::json!({
-        "models_dir": models_dir.to_string_lossy(),
+        "models_dir": app_config.models.model_dir.to_string_lossy(),
         "whisper": {
             "exists": whisper_exists,
-            "path": models_dir.join("ggml-tiny.en.bin").to_string_lossy()
+            "path": whisper_path.to_string_lossy()
         },
         "llm": {
             "exists": llm_exists,
-            "path": models_dir.join("tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf").to_string_lossy()
+            "path": llm_path.map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+            "enabled": app_config.llm_enabled()
         }
     }))
 }
