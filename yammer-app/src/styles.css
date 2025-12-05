@@ -145,7 +145,7 @@ html, body {
   font-style: italic;
 }
 
-/* Waveform visualization */
+/* Waveform visualization - clickable to toggle dictation */
 .waveform-container {
   height: 40px;
   background: rgba(0, 0, 0, 0.3);
@@ -155,7 +155,16 @@ html, body {
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  pointer-events: none;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.waveform-container:hover {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.waveform-container:active {
+  background: rgba(0, 0, 0, 0.5);
 }
 
 #waveform {

@@ -243,9 +243,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateUI();
   });
 
-  // Listen for global hotkey dictation toggle
-  await listen('dictation-toggle', async () => {
-    console.log('Dictation toggle hotkey received');
+  // Toggle dictation (shared logic for hotkey and click)
+  async function toggleDictation() {
+    console.log('Dictation toggle triggered');
 
     if (!state.pipelineInitialized) {
       console.log('Pipeline not initialized, initializing first...');
@@ -275,6 +275,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       }
     }
+  }
+
+  // Listen for global hotkey dictation toggle
+  await listen('dictation-toggle', toggleDictation);
+
+  // Click on waveform to toggle dictation
+  const waveformContainer = document.querySelector('.waveform-container');
+  waveformContainer.addEventListener('click', (e) => {
+    e.stopPropagation(); // Don't trigger window drag
+    toggleDictation();
   });
 
   // Animate waveform decay when not listening
