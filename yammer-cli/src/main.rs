@@ -713,24 +713,21 @@ async fn correct_text(text: String, model_path: Option<PathBuf>) -> Result<()> {
         let manager = DownloadManager::new(DownloadManager::default_model_dir());
         let registry = get_model_registry();
 
-        let llm_model = registry
-            .iter()
-            .find(|m| m.model_type == ModelType::Llm && {
-                let status = tokio::runtime::Handle::current()
-                    .block_on(manager.check_status(m));
-                matches!(status, ModelStatus::Ready { .. })
-            });
-
-        match llm_model {
-            Some(m) => {
+        // Find a ready LLM model
+        let mut found_model = None;
+        for m in registry.iter() {
+            if m.model_type == ModelType::Llm {
                 let status = manager.check_status(m).await;
                 if let ModelStatus::Ready { path } = status {
                     println!("Using model: {}", m.name);
-                    path
-                } else {
-                    anyhow::bail!("Model not ready");
+                    found_model = Some(path);
+                    break;
                 }
             }
+        }
+
+        match found_model {
+            Some(path) => path,
             None => {
                 println!("No LLM model found. Download one first:");
                 println!("  yammer download-models");
