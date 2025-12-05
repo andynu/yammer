@@ -12,7 +12,8 @@ use std::time::Duration;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use yammer_audio::{AudioCapture, resample_to_whisper, write_wav, Vad, VadEvent, VadProcessor, WHISPER_SAMPLE_RATE};
 use yammer_core::{
-    format_bytes, get_default_models, get_model_registry, Config, DownloadManager, ModelStatus, ModelType,
+    format_bytes, get_default_models, get_model_registry, Config, DownloadManager, ModelStatus,
+    ModelType, VerifiedHashes,
 };
 use yammer_llm::Corrector;
 use yammer_output::{TextOutput, OutputMethod};
@@ -165,6 +166,21 @@ enum Commands {
         #[arg(long)]
         init: bool,
     },
+
+    /// Manage verified model checksums
+    Hashes {
+        /// Clear all verified hashes (forces re-verification on next download)
+        #[arg(long)]
+        clear: bool,
+
+        /// Clear hash for a specific model ID
+        #[arg(long)]
+        clear_model: Option<String>,
+
+        /// Show path to hashes file
+        #[arg(long)]
+        path: bool,
+    },
 }
 
 #[tokio::main]
@@ -211,6 +227,13 @@ async fn main() -> Result<()> {
         Some(Commands::Config { show, path, init }) => {
             config_cmd(show, path, init)?;
         }
+        Some(Commands::Hashes {
+            clear,
+            clear_model,
+            path,
+        }) => {
+            hashes_cmd(clear, clear_model, path)?;
+        }
         None => {
             println!("yammer - Linux dictation app");
             println!("Run with --help for usage");
@@ -223,7 +246,7 @@ async fn main() -> Result<()> {
 async fn download_models(dry_run: bool, all: bool, specific_model: Option<String>) -> Result<()> {
     let registry = get_model_registry();
     let defaults = get_default_models();
-    let manager = DownloadManager::new(DownloadManager::default_model_dir());
+    let mut manager = DownloadManager::new(DownloadManager::default_model_dir());
 
     // Determine which models to download
     let models_to_check: Vec<_> = if let Some(ref model_id) = specific_model {
@@ -989,6 +1012,59 @@ fn config_cmd(show: bool, path: bool, init: bool) -> Result<()> {
             .to_toml()
             .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
         println!("{}", toml_str);
+    }
+
+    Ok(())
+}
+
+fn hashes_cmd(clear: bool, clear_model: Option<String>, show_path: bool) -> Result<()> {
+    let hashes_path = VerifiedHashes::default_path();
+
+    // --path: show path to hashes file
+    if show_path {
+        println!("{}", hashes_path.display());
+        return Ok(());
+    }
+
+    let mut hashes = VerifiedHashes::load();
+
+    // --clear: clear all hashes
+    if clear {
+        hashes.clear();
+        hashes
+            .save()
+            .map_err(|e| anyhow::anyhow!("Failed to save hashes: {}", e))?;
+        println!("Cleared all verified hashes.");
+        return Ok(());
+    }
+
+    // --clear-model: clear hash for a specific model
+    if let Some(model_id) = clear_model {
+        if hashes.remove(&model_id).is_some() {
+            hashes
+                .save()
+                .map_err(|e| anyhow::anyhow!("Failed to save hashes: {}", e))?;
+            println!("Cleared hash for model: {}", model_id);
+        } else {
+            println!("No hash found for model: {}", model_id);
+        }
+        return Ok(());
+    }
+
+    // Default: show all verified hashes
+    println!("Verified model checksums:\n");
+    println!("File: {}\n", hashes_path.display());
+
+    if hashes.hashes.is_empty() {
+        println!("No verified hashes yet. Hashes are stored on first download of each model.");
+    } else {
+        let mut sorted: Vec<_> = hashes.hashes.iter().collect();
+        sorted.sort_by_key(|(k, _)| k.as_str());
+
+        for (model_id, sha256) in sorted {
+            println!("{}", model_id);
+            println!("  SHA256: {}", sha256);
+        }
     }
 
     Ok(())
