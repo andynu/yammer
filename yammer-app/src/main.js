@@ -13,10 +13,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Enable window dragging on the container
   const appWindow = getCurrentWindow();
-  appContainer.addEventListener('mousedown', async (e) => {
-    // Only drag on left mouse button
+  appContainer.addEventListener('mousedown', (e) => {
+    // Only drag on left mouse button - must be sync, not async
     if (e.button === 0) {
-      await appWindow.startDragging();
+      e.preventDefault();
+      appWindow.startDragging();
     }
   });
   const transcriptText = document.querySelector('.transcript-text');
