@@ -34,6 +34,6 @@ cpal = "0.15"
 hound = "3"
 ringbuf = "0.4"
 rubato = "0.16"
-whisper-rs = "0.14"
+whisper-rs = { version = "0.14", features = ["cuda"] }
 ctrlc = "3"
-llama_cpp = "0.3"
+llama_cpp = { version = "0.3", features = ["cuda"] }

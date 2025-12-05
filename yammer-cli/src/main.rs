@@ -128,6 +128,13 @@ enum Commands {
         #[arg(long)]
         model: Option<PathBuf>,
     },
+
+    /// Show GPU information and VRAM usage
+    GpuInfo {
+        /// Watch mode: continuously update VRAM usage
+        #[arg(long, short)]
+        watch: bool,
+    },
 }
 
 #[tokio::main]
@@ -164,6 +171,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Correct { text, model }) => {
             correct_text(text, model).await?;
+        }
+        Some(Commands::GpuInfo { watch }) => {
+            gpu_info(watch).await?;
         }
         None => {
             println!("yammer - Linux dictation app");
@@ -744,6 +754,127 @@ async fn correct_text(text: String, model_path: Option<PathBuf>) -> Result<()> {
 
     println!("\nCorrected: \"{}\"", result.text);
     println!("Latency: {}ms", result.latency_ms);
+
+    Ok(())
+}
+
+/// GPU information from nvidia-smi
+#[derive(Debug)]
+struct GpuMemory {
+    device_name: String,
+    total_mb: u64,
+    used_mb: u64,
+    free_mb: u64,
+}
+
+fn query_gpu_memory() -> Result<Vec<GpuMemory>> {
+    use std::process::Command;
+
+    let output = Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=name,memory.total,memory.used,memory.free",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("nvidia-smi failed: {}", stderr);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut gpus = Vec::new();
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+        if parts.len() >= 4 {
+            gpus.push(GpuMemory {
+                device_name: parts[0].to_string(),
+                total_mb: parts[1].parse().unwrap_or(0),
+                used_mb: parts[2].parse().unwrap_or(0),
+                free_mb: parts[3].parse().unwrap_or(0),
+            });
+        }
+    }
+
+    Ok(gpus)
+}
+
+async fn gpu_info(watch: bool) -> Result<()> {
+    // Check if nvidia-smi is available
+    if std::process::Command::new("nvidia-smi")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        println!("nvidia-smi not found. Is NVIDIA driver installed?");
+        println!("\nNote: GPU info requires NVIDIA GPU with proprietary drivers.");
+        return Ok(());
+    }
+
+    let print_gpu_info = || -> Result<()> {
+        let gpus = query_gpu_memory()?;
+
+        if gpus.is_empty() {
+            println!("No NVIDIA GPUs detected.");
+            return Ok(());
+        }
+
+        println!("GPU Memory Usage:\n");
+        for (i, gpu) in gpus.iter().enumerate() {
+            let usage_percent = if gpu.total_mb > 0 {
+                (gpu.used_mb as f64 / gpu.total_mb as f64 * 100.0) as u64
+            } else {
+                0
+            };
+
+            println!("  GPU {}: {}", i, gpu.device_name);
+            println!(
+                "    Total:  {:>6} MiB",
+                gpu.total_mb
+            );
+            println!(
+                "    Used:   {:>6} MiB ({}%)",
+                gpu.used_mb, usage_percent
+            );
+            println!(
+                "    Free:   {:>6} MiB",
+                gpu.free_mb
+            );
+            println!();
+        }
+
+        // Print model size reference
+        println!("Model VRAM estimates:");
+        println!("  Whisper base.en:     ~142 MiB");
+        println!("  Whisper small.en:    ~466 MiB");
+        println!("  LLM TinyLlama Q4_K_M: ~637 MiB");
+        println!("  KV cache (2048 ctx):  ~500-1000 MiB");
+        println!("  CUDA overhead:        ~300-500 MiB");
+
+        Ok(())
+    };
+
+    if watch {
+        println!("Watching GPU memory (Ctrl+C to stop)...\n");
+
+        // Set up Ctrl+C handler
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let running_clone = running.clone();
+        ctrlc::set_handler(move || {
+            running_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+        })?;
+
+        while running.load(std::sync::atomic::Ordering::SeqCst) {
+            // Clear screen and move cursor to top
+            print!("\x1B[2J\x1B[H");
+            println!("GPU Memory Monitor (Ctrl+C to stop)\n");
+            print_gpu_info()?;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    } else {
+        print_gpu_info()?;
+    }
 
     Ok(())
 }
