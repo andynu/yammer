@@ -34,12 +34,13 @@ pub fn run() {
                         return;
                     }
 
-                    // Check for our dictation toggle shortcut (Super+D)
+                    // Check for our dictation toggle shortcut (Ctrl+Alt+D)
+                    // Note: Super+D is often grabbed by desktop environments for "show desktop"
                     let dictate_shortcut =
-                        Shortcut::new(Some(Modifiers::SUPER), Code::KeyD);
+                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyD);
                     if shortcut == &dictate_shortcut {
                         #[cfg(debug_assertions)]
-                        println!("Dictation hotkey pressed (Super+D)");
+                        println!("Dictation hotkey pressed (Ctrl+Alt+D)");
 
                         // Emit event to frontend to toggle dictation
                         if let Err(e) = app.emit("dictation-toggle", ()) {
@@ -59,16 +60,17 @@ pub fn run() {
                 println!("Window created: {:?}", window.label());
             }
 
-            // Register global hotkey: Super+D for dictation toggle
-            let dictate_shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyD);
+            // Register global hotkey: Ctrl+Alt+D for dictation toggle
+            // Note: Super+D is often grabbed by desktop environments for "show desktop"
+            let dictate_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyD);
             match app.global_shortcut().register(dictate_shortcut) {
                 Ok(_) => {
                     #[cfg(debug_assertions)]
-                    println!("Registered global shortcut: Super+D");
+                    println!("Registered global shortcut: Ctrl+Alt+D");
                 }
                 Err(e) => {
                     eprintln!(
-                        "Failed to register global shortcut Super+D: {}. \
+                        "Failed to register global shortcut Ctrl+Alt+D: {}. \
                          Another application may have grabbed this key.",
                         e
                     );
