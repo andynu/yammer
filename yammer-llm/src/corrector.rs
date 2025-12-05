@@ -67,10 +67,24 @@ Input: "#;
 
 const CORRECTION_SUFFIX: &str = "\nOutput:";
 
+/// The placeholder for user text in custom prompts
+const TEXT_PLACEHOLDER: &str = "{text}";
+
 /// LLM-based text corrector using llama.cpp
 pub struct Corrector {
     model: LlamaModel,
     config: CorrectorConfig,
+}
+
+/// Build a prompt from a custom template and input text.
+/// If the template contains {text}, replace it with the input.
+/// Otherwise, append the input at the end.
+fn build_custom_prompt(template: &str, text: &str) -> String {
+    if template.contains(TEXT_PLACEHOLDER) {
+        template.replace(TEXT_PLACEHOLDER, text)
+    } else {
+        format!("{}{}", template, text)
+    }
 }
 
 impl Corrector {
@@ -92,12 +106,24 @@ impl Corrector {
         Ok(Self { model, config })
     }
 
-    /// Correct/improve transcribed text
+    /// Correct/improve transcribed text using the built-in default prompt
     pub fn correct(&self, text: &str) -> CorrectorResult<CorrectionResult> {
+        self.correct_with_prompt(text, None)
+    }
+
+    /// Correct/improve transcribed text with an optional custom prompt template
+    pub fn correct_with_prompt(
+        &self,
+        text: &str,
+        custom_prompt: Option<&str>,
+    ) -> CorrectorResult<CorrectionResult> {
         let start = Instant::now();
 
-        // Build the prompt
-        let prompt = format!("{}{}{}", CORRECTION_PROMPT, text, CORRECTION_SUFFIX);
+        // Build the prompt - use custom if provided, otherwise use built-in default
+        let prompt = match custom_prompt {
+            Some(template) => build_custom_prompt(template, text),
+            None => format!("{}{}{}", CORRECTION_PROMPT, text, CORRECTION_SUFFIX),
+        };
         debug!("Correction prompt: {}", prompt);
 
         // Create a session for this correction with configured context size
@@ -150,5 +176,35 @@ impl Corrector {
     /// Get the configuration
     pub fn config(&self) -> &CorrectorConfig {
         &self.config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_custom_prompt_with_placeholder() {
+        let template = "Fix this text: {text}\nResult:";
+        let text = "hello world";
+        let result = build_custom_prompt(template, text);
+        assert_eq!(result, "Fix this text: hello world\nResult:");
+    }
+
+    #[test]
+    fn test_build_custom_prompt_without_placeholder() {
+        let template = "Fix this text: ";
+        let text = "hello world";
+        let result = build_custom_prompt(template, text);
+        assert_eq!(result, "Fix this text: hello world");
+    }
+
+    #[test]
+    fn test_build_custom_prompt_multiple_placeholders() {
+        // If there are multiple {text} placeholders, all get replaced
+        let template = "{text} -- {text}";
+        let text = "hello";
+        let result = build_custom_prompt(template, text);
+        assert_eq!(result, "hello -- hello");
     }
 }

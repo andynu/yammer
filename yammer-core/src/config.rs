@@ -89,6 +89,25 @@ impl Default for OutputConfig {
     }
 }
 
+/// LLM configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LlmConfig {
+    /// Custom correction prompt template. Use {text} as placeholder for transcribed text.
+    /// If omitted, uses built-in default few-shot prompt.
+    /// If {text} placeholder is missing, text is appended at end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correction_prompt: Option<String>,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            correction_prompt: None,
+        }
+    }
+}
+
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -101,6 +120,8 @@ pub struct Config {
     pub audio: AudioConfig,
     /// Output settings
     pub output: OutputConfig,
+    /// LLM settings
+    pub llm: LlmConfig,
 }
 
 impl Default for Config {
@@ -110,6 +131,7 @@ impl Default for Config {
             models: ModelsConfig::default(),
             audio: AudioConfig::default(),
             output: OutputConfig::default(),
+            llm: LlmConfig::default(),
         }
     }
 }
