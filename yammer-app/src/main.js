@@ -2,6 +2,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { availableMonitors, primaryMonitor } from '@tauri-apps/api/window';
 
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('Yammer app loaded');
@@ -10,15 +11,76 @@ document.addEventListener('DOMContentLoaded', async () => {
   const statusIndicator = document.querySelector('.status-indicator');
   const statusText = document.querySelector('.status-text');
   const appContainer = document.querySelector('.app-container');
+  const appWindow = getCurrentWindow();
+
+  // Load and apply saved window position
+  async function loadWindowPosition() {
+    try {
+      // Get primary monitor size for bounds checking
+      const monitor = await primaryMonitor();
+      if (!monitor) {
+        console.log('No primary monitor detected');
+        return;
+      }
+
+      const screenWidth = monitor.size.width;
+      const screenHeight = monitor.size.height;
+      const windowSize = await appWindow.innerSize();
+      const windowWidth = windowSize.width;
+      const windowHeight = windowSize.height;
+
+      console.log(`Screen: ${screenWidth}x${screenHeight}, Window: ${windowWidth}x${windowHeight}`);
+
+      // Get saved position (validated against current screen)
+      const position = await invoke('get_saved_window_position', {
+        screenWidth,
+        screenHeight,
+        windowWidth,
+        windowHeight
+      });
+
+      if (position) {
+        const [x, y] = position;
+        console.log(`Restoring window position: (${x}, ${y})`);
+        await appWindow.setPosition({ x, y, type: 'Physical' });
+      }
+    } catch (e) {
+      console.error('Failed to load window position:', e);
+    }
+  }
+
+  // Save current window position after dragging ends
+  async function saveWindowPosition() {
+    try {
+      const position = await appWindow.outerPosition();
+      console.log(`Saving window position: (${position.x}, ${position.y})`);
+      await invoke('save_window_position', {
+        x: position.x,
+        y: position.y
+      });
+    } catch (e) {
+      console.error('Failed to save window position:', e);
+    }
+  }
 
   // Enable window dragging on the container
-  const appWindow = getCurrentWindow();
+  let isDragging = false;
   appContainer.addEventListener('mousedown', (e) => {
     // Only drag on left mouse button - must be sync, not async
     // Don't drag if clicking on the close button
     if (e.button === 0 && !e.target.closest('.close-btn')) {
       e.preventDefault();
+      isDragging = true;
       appWindow.startDragging();
+    }
+  });
+
+  // Save position when mouse is released after a drag
+  document.addEventListener('mouseup', async () => {
+    if (isDragging) {
+      isDragging = false;
+      // Small delay to ensure window position is finalized
+      setTimeout(saveWindowPosition, 100);
     }
   });
 
@@ -291,6 +353,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Initial render
   updateUI();
   drawWaveform();
+
+  // Load saved window position
+  await loadWindowPosition();
 
   // Auto-initialize pipeline on load
   setTimeout(async () => {

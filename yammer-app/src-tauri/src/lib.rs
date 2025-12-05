@@ -221,6 +221,27 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+/// Save current window position to config
+#[tauri::command]
+async fn save_window_position(x: i32, y: i32) -> Result<(), String> {
+    debug!("Saving window position: ({}, {})", x, y);
+    let mut config = Config::load();
+    config.set_window_position(x, y)?;
+    Ok(())
+}
+
+/// Get saved window position (validated against screen bounds)
+#[tauri::command]
+async fn get_saved_window_position(
+    screen_width: u32,
+    screen_height: u32,
+    window_width: u32,
+    window_height: u32,
+) -> Result<Option<(i32, i32)>, String> {
+    let config = Config::load();
+    Ok(config.validated_window_position(screen_width, screen_height, window_width, window_height))
+}
+
 /// Simulate audio waveform data for testing (legacy command, kept for compatibility)
 #[tauri::command]
 fn simulate_audio(app: AppHandle) -> Result<(), String> {
@@ -352,6 +373,8 @@ pub fn run() {
             check_models,
             simulate_audio,
             quit_app,
+            save_window_position,
+            get_saved_window_position,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

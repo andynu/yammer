@@ -108,6 +108,27 @@ impl Default for LlmConfig {
     }
 }
 
+/// GUI window configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GuiConfig {
+    /// Window X position (if None, uses center or default)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_x: Option<i32>,
+    /// Window Y position (if None, uses center or default)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_y: Option<i32>,
+}
+
+impl Default for GuiConfig {
+    fn default() -> Self {
+        Self {
+            window_x: None,
+            window_y: None,
+        }
+    }
+}
+
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -122,6 +143,8 @@ pub struct Config {
     pub output: OutputConfig,
     /// LLM settings
     pub llm: LlmConfig,
+    /// GUI settings
+    pub gui: GuiConfig,
 }
 
 impl Default for Config {
@@ -132,6 +155,7 @@ impl Default for Config {
             audio: AudioConfig::default(),
             output: OutputConfig::default(),
             llm: LlmConfig::default(),
+            gui: GuiConfig::default(),
         }
     }
 }
@@ -260,6 +284,45 @@ impl Config {
     pub fn to_toml(&self) -> Result<String, String> {
         toml::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize config: {}", e))
+    }
+
+    /// Get saved window position, or None if not set
+    pub fn window_position(&self) -> Option<(i32, i32)> {
+        match (self.gui.window_x, self.gui.window_y) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        }
+    }
+
+    /// Set window position and save config
+    pub fn set_window_position(&mut self, x: i32, y: i32) -> Result<(), String> {
+        self.gui.window_x = Some(x);
+        self.gui.window_y = Some(y);
+        self.save()
+    }
+
+    /// Validate and clamp window position to screen bounds
+    /// Returns the clamped position, or None if window should use default centering
+    pub fn validated_window_position(
+        &self,
+        screen_width: u32,
+        screen_height: u32,
+        window_width: u32,
+        _window_height: u32,
+    ) -> Option<(i32, i32)> {
+        let (x, y) = self.window_position()?;
+
+        // Calculate max valid positions (window must be at least partially visible)
+        let max_x = screen_width as i32 - 50; // At least 50px visible
+        let max_y = screen_height as i32 - 50;
+        let min_x = -(window_width as i32) + 50;
+        let min_y = 0; // Don't allow above screen top
+
+        // Clamp to valid range
+        let clamped_x = x.clamp(min_x, max_x);
+        let clamped_y = y.clamp(min_y, max_y);
+
+        Some((clamped_x, clamped_y))
     }
 }
 
