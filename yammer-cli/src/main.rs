@@ -46,7 +46,11 @@ enum Commands {
     ListModels,
 
     /// List available audio input devices
-    ListDevices,
+    ListDevices {
+        /// Show all supported configurations (verbose)
+        #[arg(long, short)]
+        verbose: bool,
+    },
 
     /// Record audio from microphone
     Record {
@@ -143,8 +147,8 @@ async fn main() -> Result<()> {
         Some(Commands::ListModels) => {
             list_models().await?;
         }
-        Some(Commands::ListDevices) => {
-            list_devices()?;
+        Some(Commands::ListDevices { verbose }) => {
+            list_devices(verbose)?;
         }
         Some(Commands::Record { duration, output, device, resample }) => {
             record_audio(duration, output, device, resample).await?;
@@ -324,7 +328,7 @@ async fn list_models() -> Result<()> {
     Ok(())
 }
 
-fn list_devices() -> Result<()> {
+fn list_devices(verbose: bool) -> Result<()> {
     let devices = AudioCapture::list_devices()?;
 
     if devices.is_empty() {
@@ -340,16 +344,37 @@ fn list_devices() -> Result<()> {
         let default_marker = if device.is_default { " (default)" } else { "" };
         println!("  {}{}", device.name, default_marker);
 
-        for config in &device.configs {
-            println!(
-                "    - {} ch, {}-{} Hz, {}",
-                config.channels,
-                config.min_sample_rate,
-                config.max_sample_rate,
-                config.sample_format
-            );
+        if verbose {
+            // Verbose mode: show all configs
+            for config in &device.configs {
+                println!(
+                    "    - {} ch, {}-{} Hz, {}",
+                    config.channels,
+                    config.min_sample_rate,
+                    config.max_sample_rate,
+                    config.sample_format
+                );
+            }
+        } else if !device.configs.is_empty() {
+            // Simplified mode: show single summary line
+            let min_channels = device.configs.iter().map(|c| c.channels).min().unwrap_or(0);
+            let max_channels = device.configs.iter().map(|c| c.channels).max().unwrap_or(0);
+            let min_rate = device.configs.iter().map(|c| c.min_sample_rate).min().unwrap_or(0);
+            let max_rate = device.configs.iter().map(|c| c.max_sample_rate).max().unwrap_or(0);
+
+            let channels_str = if min_channels == max_channels {
+                format!("{} ch", min_channels)
+            } else {
+                format!("{}-{} ch", min_channels, max_channels)
+            };
+
+            println!("    {} {}-{} Hz", channels_str, min_rate, max_rate);
         }
         println!();
+    }
+
+    if !verbose {
+        println!("Tip: Use --verbose to see all supported configurations");
     }
 
     Ok(())
