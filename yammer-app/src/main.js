@@ -15,11 +15,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   const appWindow = getCurrentWindow();
   appContainer.addEventListener('mousedown', (e) => {
     // Only drag on left mouse button - must be sync, not async
-    if (e.button === 0) {
+    // Don't drag if clicking on the close button
+    if (e.button === 0 && !e.target.closest('.close-btn')) {
       e.preventDefault();
       appWindow.startDragging();
     }
   });
+
+  // Close button handler - use invoke to call backend quit
+  const closeBtn = document.querySelector('.close-btn');
+  closeBtn.addEventListener('mousedown', async (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    console.log('Close button clicked');
+    await invoke('quit_app');
+  });
+
+  // Escape key to close
+  document.addEventListener('keydown', async (e) => {
+    if (e.key === 'Escape') {
+      console.log('Escape pressed');
+      await invoke('quit_app');
+    }
+  });
+
   const transcriptText = document.querySelector('.transcript-text');
   const waveformCanvas = document.getElementById('waveform');
   const waveformCtx = waveformCanvas.getContext('2d');

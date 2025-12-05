@@ -214,6 +214,13 @@ async fn check_models() -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Quit the application
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    info!("Quit command received");
+    app.exit(0);
+}
+
 /// Simulate audio waveform data for testing (legacy command, kept for compatibility)
 #[tauri::command]
 fn simulate_audio(app: AppHandle) -> Result<(), String> {
@@ -344,6 +351,7 @@ pub fn run() {
             get_pipeline_state,
             check_models,
             simulate_audio,
+            quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -37,7 +37,33 @@ html, body {
   display: flex;
   align-items: center;
   gap: 8px;
-  pointer-events: none;
+}
+
+/* Close button */
+.close-btn {
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #666;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.close-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e0e0e0;
+}
+
+.close-btn:active {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .status-indicator {
