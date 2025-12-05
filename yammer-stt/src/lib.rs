@@ -6,5 +6,5 @@ pub mod transcriber;
 
 pub use transcriber::{
     load_wav_16k, TranscribeError, TranscribeResult, Transcriber, Transcript, TranscriptSegment,
-    WHISPER_SAMPLE_RATE,
+    WHISPER_MIN_SAMPLES, WHISPER_SAMPLE_RATE,
 };

@@ -8,6 +8,9 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 /// Target sample rate for Whisper
 pub const WHISPER_SAMPLE_RATE: u32 = 16000;
 
+/// Minimum audio duration in samples (Whisper requires at least 1 second)
+pub const WHISPER_MIN_SAMPLES: usize = 16000;
+
 /// Transcription errors
 #[derive(Error, Debug)]
 pub enum TranscribeError {
@@ -98,8 +101,25 @@ impl Transcriber {
 
     /// Transcribe audio samples (must be 16kHz mono f32)
     pub fn transcribe(&self, samples: &[f32]) -> TranscribeResult<Transcript> {
-        debug!("Transcribing {} samples ({:.2}s)", samples.len(),
-               samples.len() as f32 / WHISPER_SAMPLE_RATE as f32);
+        debug!(
+            "Transcribing {} samples ({:.2}s)",
+            samples.len(),
+            samples.len() as f32 / WHISPER_SAMPLE_RATE as f32
+        );
+
+        // Pad short audio with silence to meet Whisper's minimum requirement
+        let samples = if samples.len() < WHISPER_MIN_SAMPLES {
+            debug!(
+                "Padding audio from {} to {} samples",
+                samples.len(),
+                WHISPER_MIN_SAMPLES
+            );
+            let mut padded = samples.to_vec();
+            padded.resize(WHISPER_MIN_SAMPLES, 0.0);
+            std::borrow::Cow::Owned(padded)
+        } else {
+            std::borrow::Cow::Borrowed(samples)
+        };
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
@@ -115,7 +135,7 @@ impl Transcriber {
             .map_err(|e| TranscribeError::Transcription(e.to_string()))?;
 
         // Run transcription
-        state.full(params, samples)
+        state.full(params, &samples)
             .map_err(|e| TranscribeError::Transcription(e.to_string()))?;
 
         // Extract segments
