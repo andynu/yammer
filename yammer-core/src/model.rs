@@ -85,18 +85,29 @@ pub fn get_model_registry() -> Vec<ModelInfo> {
         },
         // LLM models (GGUF format)
         ModelInfo {
-            id: "qwen2-1.5b".to_string(),
-            name: "Qwen2 1.5B (Grammar/Punctuation)".to_string(),
+            id: "phi-3-mini-4k".to_string(),
+            name: "Phi-3-Mini 4K (Grammar/Punctuation)".to_string(),
             model_type: ModelType::Llm,
-            url: "https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf".to_string(),
-            size_bytes: 1_019_348_992, // ~972MB
-            sha256: None, // Will verify after first download
-            filename: "qwen2-1_5b-instruct-q4_k_m.gguf".to_string(),
+            url: "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf".to_string(),
+            size_bytes: 2_361_278_464, // ~2.2GB (Q4 quantization)
+            sha256: None,
+            filename: "Phi-3-mini-4k-instruct-q4.gguf".to_string(),
         },
+        // NOTE: Qwen2 models currently incompatible with llama.cpp 0.3 (missing output.weight tensor)
+        // See: https://github.com/QwenLM/Qwen2.5/issues/255
+        // ModelInfo {
+        //     id: "qwen2-1.5b".to_string(),
+        //     name: "Qwen2 1.5B (Grammar/Punctuation)".to_string(),
+        //     model_type: ModelType::Llm,
+        //     url: "https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf".to_string(),
+        //     size_bytes: 986_045_824, // ~941MB (actual size from HuggingFace)
+        //     sha256: None,
+        //     filename: "qwen2-1_5b-instruct-q4_k_m.gguf".to_string(),
+        // },
     ]
 }
 
 /// Get default models for a fresh installation
 pub fn get_default_models() -> Vec<&'static str> {
-    vec!["whisper-tiny.en", "qwen2-1.5b"]
+    vec!["whisper-tiny.en", "phi-3-mini-4k"]
 }
