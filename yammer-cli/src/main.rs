@@ -630,6 +630,76 @@ async fn transcribe_file(file: PathBuf, model_path: Option<PathBuf>, timestamps:
     Ok(())
 }
 
+/// Dictation state for UI display
+#[derive(Clone, Copy, PartialEq)]
+enum DictateState {
+    Listening,
+    Recording,
+    Processing,
+}
+
+impl DictateState {
+    fn display(&self) -> &'static str {
+        match self {
+            DictateState::Listening => "○ Listening",
+            DictateState::Recording => "● Recording",
+            DictateState::Processing => "◐ Processing",
+        }
+    }
+
+    fn color_code(&self) -> &'static str {
+        match self {
+            DictateState::Listening => "\x1b[90m",  // Gray
+            DictateState::Recording => "\x1b[91m",  // Red
+            DictateState::Processing => "\x1b[93m", // Yellow
+        }
+    }
+}
+
+/// Build ASCII audio level meter
+fn audio_meter(rms: f32, width: usize) -> String {
+    // Scale RMS (typically 0.0-0.3) to meter width
+    let level = (rms * 10.0).min(1.0);
+    let filled = (level * width as f32) as usize;
+
+    let bar: String = (0..width)
+        .map(|i| if i < filled { '█' } else { '░' })
+        .collect();
+
+    // Color based on level
+    let color = if level > 0.7 {
+        "\x1b[91m" // Red (loud)
+    } else if level > 0.3 {
+        "\x1b[92m" // Green (good)
+    } else {
+        "\x1b[90m" // Gray (quiet)
+    };
+
+    format!("{}{}│\x1b[0m", color, bar)
+}
+
+/// Update the status line without newline
+fn update_status(state: DictateState, rms: f32) {
+    use std::io::Write;
+    let meter = audio_meter(rms, 20);
+    // \r = carriage return, \x1b[K = clear to end of line
+    print!(
+        "\r\x1b[K{}{}\x1b[0m  {}",
+        state.color_code(),
+        state.display(),
+        meter
+    );
+    let _ = std::io::stdout().flush();
+}
+
+/// Clear status line and print transcribed text
+fn print_transcript(text: &str) {
+    use std::io::Write;
+    // Clear status line, print text, then newline
+    print!("\r\x1b[K{}\n", text);
+    let _ = std::io::stdout().flush();
+}
+
 async fn dictate(
     model_path: Option<PathBuf>,
     threshold: f32,
@@ -650,7 +720,7 @@ async fn dictate(
             if m.model_type == ModelType::Whisper {
                 let status = manager.check_status(m).await;
                 if let ModelStatus::Ready { path } = status {
-                    println!("Using model: {}", m.name);
+                    eprintln!("Using model: {}", m.name);
                     found_model = Some(path);
                     break;
                 }
@@ -660,30 +730,30 @@ async fn dictate(
         match found_model {
             Some(path) => path,
             None => {
-                println!("No Whisper model found. Download one first:");
-                println!("  yammer download-models");
+                eprintln!("No Whisper model found. Download one first:");
+                eprintln!("  yammer download-models");
                 anyhow::bail!("No Whisper model available");
             }
         }
     };
 
-    println!("Loading Whisper model...");
+    eprintln!("Loading Whisper model...");
     let transcriber = Arc::new(Transcriber::new(&model)?);
 
     // Set up audio capture
     let capture = if let Some(ref device_name) = device {
-        println!("Using device: {}", device_name);
+        eprintln!("Using device: {}", device_name);
         AudioCapture::with_device(device_name)?
     } else {
         AudioCapture::new()?
     };
 
     let native_rate = capture.sample_rate();
-    println!(
+    eprintln!(
         "Dictation mode - {} Hz, VAD threshold: {}",
         native_rate, threshold
     );
-    println!("Speak to transcribe. Press Ctrl+C to stop.\n");
+    eprintln!("Speak to transcribe. Press Ctrl+C to stop.\n");
 
     // Start continuous capture (50ms chunks for VAD processing)
     let (_handle, mut audio_rx) = capture.start_capture(50)?;
@@ -705,6 +775,10 @@ async fn dictate(
         Some(Duration::from_secs(duration_secs))
     };
 
+    // Track current state and audio level for UI
+    let mut current_state = DictateState::Listening;
+    let mut current_rms: f32 = 0.0;
+
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         // Check duration limit
         if let Some(max_duration) = duration {
@@ -716,19 +790,42 @@ async fn dictate(
         // Get next audio chunk with timeout
         let chunk = tokio::select! {
             Some(chunk) = audio_rx.recv() => chunk,
-            _ = tokio::time::sleep(Duration::from_millis(100)) => continue,
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                // Update display even when no audio (keeps meter visible)
+                update_status(current_state, current_rms);
+                continue;
+            }
         };
+
+        // Calculate RMS for audio meter
+        current_rms = yammer_audio::Vad::calculate_rms(&chunk);
 
         // Process through VAD
         let events = vad_processor.process(&chunk);
 
+        // Update state based on VAD
+        let vad_state = vad_processor.vad().state();
+        current_state = match vad_state {
+            yammer_audio::VadState::Speech | yammer_audio::VadState::MaybeSilence => {
+                DictateState::Recording
+            }
+            _ => DictateState::Listening,
+        };
+
+        // Update status display
+        update_status(current_state, current_rms);
+
         for event in events {
             if let VadEvent::SpeechEnd { samples } = event {
-                // Speech segment complete, transcribe it
+                // Speech segment complete - show processing state
+                current_state = DictateState::Processing;
+                update_status(current_state, current_rms);
+
                 let speech_duration_ms = (samples.len() as f32 / native_rate as f32 * 1000.0) as u32;
 
                 // Skip very short segments (likely noise)
                 if speech_duration_ms < 200 {
+                    current_state = DictateState::Listening;
                     continue;
                 }
 
@@ -737,7 +834,8 @@ async fn dictate(
                     match resample_to_whisper(&samples, native_rate) {
                         Ok(resampled) => resampled,
                         Err(e) => {
-                            eprintln!("Resample error: {}", e);
+                            eprintln!("\r\x1b[KResample error: {}", e);
+                            current_state = DictateState::Listening;
                             continue;
                         }
                     }
@@ -755,21 +853,22 @@ async fn dictate(
                     Ok(transcript) => {
                         let text = transcript.text();
                         if !text.trim().is_empty() {
-                            print!("{} ", text.trim());
-                            // Flush stdout to show text immediately
-                            use std::io::Write;
-                            std::io::stdout().flush()?;
+                            print_transcript(text.trim());
                         }
                     }
                     Err(e) => {
-                        eprintln!("\n[Transcription error: {}]", e);
+                        eprintln!("\r\x1b[K[Transcription error: {}]", e);
                     }
                 }
+
+                current_state = DictateState::Listening;
             }
         }
     }
 
-    println!("\n\nDictation stopped.");
+    // Clear status line on exit
+    print!("\r\x1b[K");
+    eprintln!("Dictation stopped.");
     Ok(())
 }
 
