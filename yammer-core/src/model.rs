@@ -57,12 +57,21 @@ pub fn get_model_registry() -> Vec<ModelInfo> {
     vec![
         // Whisper models (GGML format from HuggingFace)
         ModelInfo {
+            id: "whisper-tiny.en".to_string(),
+            name: "Whisper Tiny (English)".to_string(),
+            model_type: ModelType::Whisper,
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin".to_string(),
+            size_bytes: 77_704_715, // ~74MB
+            sha256: None, // Will log actual SHA256 on first download
+            filename: "ggml-tiny.en.bin".to_string(),
+        },
+        ModelInfo {
             id: "whisper-base.en".to_string(),
             name: "Whisper Base (English)".to_string(),
             model_type: ModelType::Whisper,
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin".to_string(),
             size_bytes: 147_951_465, // ~141MB
-            sha256: Some("a03779c86df3323075f5e796b3f6f1fe7d8abbca".to_string()),
+            sha256: None, // Will log actual SHA256 on first download
             filename: "ggml-base.en.bin".to_string(),
         },
         ModelInfo {
@@ -71,7 +80,7 @@ pub fn get_model_registry() -> Vec<ModelInfo> {
             model_type: ModelType::Whisper,
             url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin".to_string(),
             size_bytes: 487_601_929, // ~465MB
-            sha256: Some("6a4b2e8696cd4d0662e4c2c47b07ef3f4ef0c2f9".to_string()),
+            sha256: None, // TODO: Fetch from server or verify after download
             filename: "ggml-small.en.bin".to_string(),
         },
         // LLM models (GGUF format)
@@ -89,5 +98,5 @@ pub fn get_model_registry() -> Vec<ModelInfo> {
 
 /// Get default models for a fresh installation
 pub fn get_default_models() -> Vec<&'static str> {
-    vec!["whisper-base.en", "qwen2-1.5b"]
+    vec!["whisper-tiny.en", "qwen2-1.5b"]
 }
