@@ -3,7 +3,9 @@
 mod pipeline;
 
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
+#[cfg(debug_assertions)]
+use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
@@ -308,10 +310,9 @@ pub fn run() {
         )
         .manage(app_state)
         .setup(|app| {
-            let window = app.get_webview_window("main").expect("Main window not found");
-
             #[cfg(debug_assertions)]
             {
+                let window = app.get_webview_window("main").expect("Main window not found");
                 info!("Window created: {:?}", window.label());
             }
 
