@@ -15,7 +15,7 @@
         "title": "Yammer",
         "label": "main",
         "width": 300,
-        "height": 80,
+        "height": 140,
         "decorations": false,
         "transparent": true,
         "resizable": false,
