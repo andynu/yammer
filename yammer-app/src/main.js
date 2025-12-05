@@ -321,36 +321,57 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // Toggle dictation (shared logic for hotkey and click)
-  async function toggleDictation() {
-    console.log('Dictation toggle triggered');
+  let lastToggleTime = 0;
+  let isToggling = false;
 
-    if (!state.pipelineInitialized) {
-      console.log('Pipeline not initialized, initializing first...');
-      try {
-        await initializePipeline();
-      } catch (e) {
-        console.error('Failed to initialize pipeline:', e);
-        state.status = 'error';
-        state.transcript = `Initialization failed: ${e}`;
-        updateUI();
-        return;
-      }
+  async function toggleDictation() {
+    // Debounce: ignore toggles within 500ms of each other
+    const now = Date.now();
+    if (now - lastToggleTime < 500) {
+      console.log('Toggle debounced (too fast)');
+      return;
     }
 
+    // Prevent concurrent toggle calls
+    if (isToggling) {
+      console.log('Toggle already in progress');
+      return;
+    }
+
+    lastToggleTime = now;
+    isToggling = true;
+
+    console.log('Dictation toggle triggered');
+
     try {
+      if (!state.pipelineInitialized) {
+        console.log('Pipeline not initialized, initializing first...');
+        try {
+          await initializePipeline();
+        } catch (e) {
+          console.error('Failed to initialize pipeline:', e);
+          state.status = 'error';
+          state.transcript = `Initialization failed: ${e}`;
+          updateUI();
+          return;
+        }
+      }
+
       // Toggle dictation via backend
       const nowRunning = await invoke('toggle_dictation');
       console.log('Dictation toggled, now running:', nowRunning);
     } catch (e) {
       console.error('Toggle dictation error:', e);
       // If "already running", try stopping
-      if (e.includes('already in progress')) {
+      if (e.includes && e.includes('already in progress')) {
         try {
           await invoke('stop_dictation');
         } catch (stopErr) {
           console.error('Stop dictation error:', stopErr);
         }
       }
+    } finally {
+      isToggling = false;
     }
   }
 
