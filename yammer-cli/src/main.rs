@@ -496,25 +496,21 @@ async fn transcribe_file(file: PathBuf, model_path: Option<PathBuf>, timestamps:
         let manager = DownloadManager::new(DownloadManager::default_model_dir());
         let registry = get_model_registry();
 
-        // Find a downloaded Whisper model
-        let whisper_model = registry
-            .iter()
-            .find(|m| m.model_type == ModelType::Whisper && {
-                let status = tokio::runtime::Handle::current()
-                    .block_on(manager.check_status(m));
-                matches!(status, ModelStatus::Ready { .. })
-            });
-
-        match whisper_model {
-            Some(m) => {
+        // Find a ready Whisper model
+        let mut found_model = None;
+        for m in registry.iter() {
+            if m.model_type == ModelType::Whisper {
                 let status = manager.check_status(m).await;
                 if let ModelStatus::Ready { path } = status {
                     println!("Using model: {} ({:?})", m.name, path);
-                    path
-                } else {
-                    anyhow::bail!("Model not ready");
+                    found_model = Some(path);
+                    break;
                 }
             }
+        }
+
+        match found_model {
+            Some(path) => path,
             None => {
                 println!("No Whisper model found. Download one first:");
                 println!("  yammer download-models");
