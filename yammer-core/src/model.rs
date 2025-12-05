@@ -89,7 +89,7 @@ pub fn get_model_registry() -> Vec<ModelInfo> {
             name: "TinyLlama 1.1B Chat (Grammar/Punctuation)".to_string(),
             model_type: ModelType::Llm,
             url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf".to_string(),
-            size_bytes: 669_000_000, // ~669MB (Q4_K_M quantization)
+            size_bytes: 668_788_096, // ~638MB (actual size from HuggingFace)
             sha256: None,
             filename: "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf".to_string(),
         },
@@ -106,15 +106,15 @@ pub fn get_model_registry() -> Vec<ModelInfo> {
         //     sha256: None,
         //     filename: "Phi-3-mini-4k-instruct-q4.gguf".to_string(),
         // },
-        ModelInfo {
-            id: "gemma-2-2b".to_string(),
-            name: "Gemma 2 2B (Grammar/Punctuation)".to_string(),
-            model_type: ModelType::Llm,
-            url: "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf".to_string(),
-            size_bytes: 1_708_582_752, // ~1.6GB (actual size from HuggingFace)
-            sha256: None,
-            filename: "gemma-2-2b-it-Q4_K_M.gguf".to_string(),
-        },
+        // ModelInfo {
+        //     id: "gemma-2-2b".to_string(),
+        //     name: "Gemma 2 2B (Grammar/Punctuation)".to_string(),
+        //     model_type: ModelType::Llm,
+        //     url: "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf".to_string(),
+        //     size_bytes: 1_708_582_752, // ~1.6GB (actual size from HuggingFace)
+        //     sha256: None,
+        //     filename: "gemma-2-2b-it-Q4_K_M.gguf".to_string(),
+        // },
         // NOTE: Qwen2 models currently incompatible with llama.cpp 0.3 (missing output.weight tensor)
         // See: https://github.com/QwenLM/Qwen2.5/issues/255
         // ModelInfo {
