@@ -407,10 +407,33 @@ impl DictationPipeline {
         Ok(result.text)
     }
 
+    /// Check if text contains only Whisper special tokens (not real speech)
+    fn is_special_token_only(text: &str) -> bool {
+        let trimmed = text.trim();
+        // Common Whisper special tokens that indicate non-speech
+        let special_patterns = [
+            "[BLANK_AUDIO]",
+            "[MUSIC]",
+            "[INAUDIBLE]",
+            "(music)",
+            "(inaudible)",
+            "(silence)",
+            "[SILENCE]",
+        ];
+        special_patterns.iter().any(|&p| trimmed.eq_ignore_ascii_case(p))
+    }
+
     /// Output text (blocking)
     fn output_blocking(&self, text: &str) -> Result<(), String> {
         if text.is_empty() {
             warn!("Empty text, nothing to output");
+            self.send_state(PipelineState::Done);
+            return Ok(());
+        }
+
+        // Skip Whisper special tokens
+        if Self::is_special_token_only(text) {
+            warn!("Skipping special token: \"{}\"", text);
             self.send_state(PipelineState::Done);
             return Ok(());
         }
