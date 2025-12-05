@@ -85,17 +85,17 @@ cargo build --release
 ### 2. Download AI Models
 
 ```bash
-# Download default models (Whisper Tiny + Phi-2)
+# Download default models (Whisper Base + TinyLlama)
 cargo run --release --bin yammer download-models
 
 # Or download only Whisper (for testing)
-cargo run --release --bin yammer download-models --model whisper-tiny-en
+cargo run --release --bin yammer download-models --model whisper-base-en
 ```
 
 Models are downloaded to: `~/.cache/yammer/models/`
 
 **Model sizes:**
-- Whisper Tiny English: ~75MB (fast, good accuracy)
+- Whisper Base English: ~141MB (good balance of speed and accuracy)
 - Phi-2 Q4 (LLM): ~1.6GB (text correction)
 
 ### 3. Test Your Setup

@@ -131,5 +131,5 @@ pub fn get_model_registry() -> Vec<ModelInfo> {
 
 /// Get default models for a fresh installation
 pub fn get_default_models() -> Vec<&'static str> {
-    vec!["whisper-tiny.en", "tinyllama-1.1b"]
+    vec!["whisper-base.en", "tinyllama-1.1b"]
 }

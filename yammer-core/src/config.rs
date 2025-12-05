@@ -45,7 +45,7 @@ impl Default for ModelsConfig {
 
         Self {
             model_dir,
-            whisper: "tiny.en".to_string(),
+            whisper: "base.en".to_string(),
             llm: "tinyllama-1.1b".to_string(),
         }
     }
@@ -272,7 +272,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.hotkey.key, "D");
         assert_eq!(config.hotkey.modifiers, vec!["Control", "Alt"]);
-        assert_eq!(config.models.whisper, "tiny.en");
+        assert_eq!(config.models.whisper, "base.en");
         assert_eq!(config.audio.vad_threshold, 0.01);
         assert_eq!(config.output.method, "type");
     }
@@ -281,7 +281,7 @@ mod tests {
     fn test_whisper_model_path() {
         let config = Config::default();
         let path = config.whisper_model_path();
-        assert!(path.to_string_lossy().contains("ggml-tiny.en.bin"));
+        assert!(path.to_string_lossy().contains("ggml-base.en.bin"));
     }
 
     #[test]
