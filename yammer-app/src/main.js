@@ -108,7 +108,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     } else {
       transcriptText.textContent = state.pipelineInitialized
-        ? 'Press Ctrl+Alt+D to start dictating...'
+        ? 'Press Ctrl+Shift+Space to start dictating...'
         : 'Initializing...';
       transcriptText.classList.add('placeholder');
       transcriptText.classList.remove('partial');

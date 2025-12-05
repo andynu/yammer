@@ -271,11 +271,11 @@ pub fn run() {
                         return;
                     }
 
-                    // Check for our dictation toggle shortcut (Ctrl+Alt+D)
+                    // Check for our dictation toggle shortcut (Ctrl+Shift+Space)
                     let dictate_shortcut =
-                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyD);
+                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
                     if shortcut == &dictate_shortcut {
-                        debug!("Dictation hotkey pressed (Ctrl+Alt+D)");
+                        debug!("Dictation hotkey pressed (Ctrl+Shift+Space)");
 
                         // Emit event to frontend to toggle dictation
                         if let Err(e) = app.emit("dictation-toggle", ()) {
@@ -294,15 +294,15 @@ pub fn run() {
                 info!("Window created: {:?}", window.label());
             }
 
-            // Register global hotkey: Ctrl+Alt+D for dictation toggle
-            let dictate_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyD);
+            // Register global hotkey: Ctrl+Shift+Space for dictation toggle
+            let dictate_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
             match app.global_shortcut().register(dictate_shortcut) {
                 Ok(_) => {
-                    info!("Registered global shortcut: Ctrl+Alt+D");
+                    info!("Registered global shortcut: Ctrl+Shift+Space");
                 }
                 Err(e) => {
                     error!(
-                        "Failed to register global shortcut Ctrl+Alt+D: {}. \
+                        "Failed to register global shortcut Ctrl+Shift+Space: {}. \
                          Another application may have grabbed this key.",
                         e
                     );
