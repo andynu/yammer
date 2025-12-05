@@ -1,6 +1,7 @@
 // Yammer frontend - dictation UI
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('Yammer app loaded');
@@ -8,6 +9,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Get UI elements
   const statusIndicator = document.querySelector('.status-indicator');
   const statusText = document.querySelector('.status-text');
+  const appContainer = document.querySelector('.app-container');
+
+  // Enable window dragging on the container
+  const appWindow = getCurrentWindow();
+  appContainer.addEventListener('mousedown', async (e) => {
+    // Only drag on left mouse button
+    if (e.button === 0) {
+      await appWindow.startDragging();
+    }
+  });
   const transcriptText = document.querySelector('.transcript-text');
   const waveformCanvas = document.getElementById('waveform');
   const waveformCtx = waveformCanvas.getContext('2d');

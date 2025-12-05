@@ -304,7 +304,7 @@ pub fn run() {
 
             // Spawn task to forward pipeline events to frontend
             let app_handle = app.handle().clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 while let Some(event) = event_rx.recv().await {
                     match event {
                         PipelineEvent::StateChanged(state) => {
