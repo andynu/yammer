@@ -7,6 +7,54 @@ import { availableMonitors, primaryMonitor } from '@tauri-apps/api/window';
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('Yammer app loaded');
 
+  // Audio feedback using Web Audio API
+  let audioContext = null;
+
+  function getAudioContext() {
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return audioContext;
+  }
+
+  // Play a short beep tone
+  function playTone(frequency, duration, volume = 0.3) {
+    try {
+      const ctx = getAudioContext();
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      oscillator.frequency.value = frequency;
+      oscillator.type = 'sine';
+
+      gainNode.gain.setValueAtTime(0, ctx.currentTime);
+      gainNode.gain.linearRampToValueAtTime(volume, ctx.currentTime + 0.01);
+      gainNode.gain.linearRampToValueAtTime(0, ctx.currentTime + duration);
+
+      oscillator.start(ctx.currentTime);
+      oscillator.stop(ctx.currentTime + duration);
+    } catch (e) {
+      console.warn('Audio feedback not available:', e);
+    }
+  }
+
+  // Audio feedback for recording start (ascending tone)
+  function playStartSound() {
+    playTone(440, 0.08, 0.2);  // A4
+    setTimeout(() => playTone(554, 0.08, 0.2), 80);  // C#5
+    setTimeout(() => playTone(659, 0.12, 0.2), 160); // E5
+  }
+
+  // Audio feedback for recording stop/done (descending tone)
+  function playStopSound() {
+    playTone(659, 0.08, 0.2);  // E5
+    setTimeout(() => playTone(554, 0.08, 0.2), 80);  // C#5
+    setTimeout(() => playTone(440, 0.12, 0.2), 160); // A4
+  }
+
   // Get UI elements
   const statusIndicator = document.querySelector('.status-indicator');
   const statusText = document.querySelector('.status-text');
@@ -196,9 +244,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // Listen for pipeline state changes from backend
+  let previousState = 'idle';
   await listen('pipeline-state', (event) => {
     const newState = event.payload;
     console.log('Pipeline state:', newState);
+
+    // Play audio feedback on state transitions
+    if (newState === 'listening' && previousState !== 'listening') {
+      // Started recording
+      playStartSound();
+    } else if (newState === 'done' && previousState !== 'done') {
+      // Finished successfully
+      playStopSound();
+    }
+    previousState = newState;
 
     state.status = newState;
     state.isRunning = newState === 'listening' || newState === 'processing' || newState === 'correcting';
