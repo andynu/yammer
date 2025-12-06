@@ -198,11 +198,11 @@ impl DictationPipeline {
             return Err(err);
         }
 
-        // 1. Listen for speech
+        // 1. Listen for speech (cancel flag is used to stop listening)
         let samples = match self.listen_blocking() {
             Ok(s) => s,
             Err(e) => {
-                if e == "Cancelled" {
+                if e == "No audio recorded" {
                     self.send_state(PipelineState::Idle);
                 } else {
                     self.send_error(e.clone());
@@ -211,6 +211,10 @@ impl DictationPipeline {
                 return Err(e);
             }
         };
+
+        // Reset cancel flag - user clicked stop to END listening, not to cancel processing
+        // We have audio samples, so proceed with transcription and correction
+        self.reset_cancel();
 
         // 2. Transcribe
         let text = match self.transcribe_blocking(&samples) {
