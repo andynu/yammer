@@ -276,7 +276,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     } else {
       transcriptText.textContent = state.pipelineInitialized
-        ? 'Click record or press Ctrl+Shift+Space'
+        ? 'Click record or press Ctrl+Space'
         : 'Initializing...';
       transcriptText.classList.add('placeholder');
       transcriptText.classList.remove('partial');

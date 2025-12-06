@@ -370,11 +370,11 @@ pub fn run() {
                         return;
                     }
 
-                    // Check for our dictation toggle shortcut (Ctrl+Shift+Space)
+                    // Check for our dictation toggle shortcut (Ctrl+Space)
                     let dictate_shortcut =
-                        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+                        Shortcut::new(Some(Modifiers::CONTROL), Code::Space);
                     if shortcut == &dictate_shortcut {
-                        debug!("Dictation hotkey pressed (Ctrl+Shift+Space)");
+                        debug!("Dictation hotkey pressed (Ctrl+Space)");
 
                         // Check if window was hidden/minimized
                         let was_hidden = if let Some(window) = app.get_webview_window("main") {
@@ -418,15 +418,15 @@ pub fn run() {
                 info!("Window created: {:?}", window.label());
             }
 
-            // Register global hotkey: Ctrl+Shift+Space for dictation toggle
-            let dictate_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+            // Register global hotkey: Ctrl+Space for dictation toggle
+            let dictate_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::Space);
             match app.global_shortcut().register(dictate_shortcut) {
                 Ok(_) => {
-                    info!("Registered global shortcut: Ctrl+Shift+Space");
+                    info!("Registered global shortcut: Ctrl+Space");
                 }
                 Err(e) => {
                     error!(
-                        "Failed to register global shortcut Ctrl+Shift+Space: {}. \
+                        "Failed to register global shortcut Ctrl+Space: {}. \
                          Another application may have grabbed this key.",
                         e
                     );
