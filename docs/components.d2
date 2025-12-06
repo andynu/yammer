@@ -1,0 +1,89 @@
+# Yammer Component Architecture
+
+direction: right
+
+user: User {
+  shape: person
+}
+
+# External Dependencies
+external: External {
+  mic: Microphone
+  xdotool: xdotool
+  xclip: xclip
+  app: Target App
+}
+
+# Rust Workspace Crates
+workspace: yammer workspace {
+
+  core: yammer-core {
+    config: Config (TOML)
+    model: Model Registry
+    download: Download Manager
+  }
+
+  audio: yammer-audio {
+    capture: Audio Capture (cpal)
+    vad: Voice Activity Detection
+    resample: Resampler (16kHz)
+  }
+
+  stt: yammer-stt {
+    whisper: Whisper Transcriber
+  }
+
+  llm: yammer-llm {
+    corrector: LLM Corrector
+  }
+
+  output: yammer-output {
+    textout: Text Output
+  }
+
+  cli: yammer-cli {
+    commands: CLI Commands
+  }
+
+  app: yammer-app (Tauri) {
+    backend: Rust Backend
+    frontend: Web Frontend
+    pipeline: Dictation Pipeline
+  }
+}
+
+# Models on disk
+models: AI Models {
+  whisper_model: Whisper GGML
+  llm_model: TinyLlama GGUF
+}
+
+# Dependencies between crates
+workspace.audio -> workspace.core: uses config
+workspace.stt -> workspace.core: uses config
+workspace.llm -> workspace.core: uses config
+workspace.output -> workspace.core: uses config
+
+workspace.cli -> workspace.audio: audio testing
+workspace.cli -> workspace.stt: transcribe cmd
+workspace.cli -> workspace.llm: correct cmd
+workspace.cli -> workspace.output: dictate output
+workspace.cli -> workspace.core: config cmds
+
+workspace.app.pipeline -> workspace.audio: capture
+workspace.app.pipeline -> workspace.stt: transcribe
+workspace.app.pipeline -> workspace.llm: correct
+workspace.app.pipeline -> workspace.output: output
+
+# External connections
+user -> external.mic: speaks
+external.mic -> workspace.audio.capture: audio stream
+workspace.output.textout -> external.xdotool: type command
+workspace.output.textout -> external.xclip: clipboard
+external.xdotool -> external.app: keystrokes
+external.xclip -> external.app: paste
+
+# Model loading
+workspace.core.download -> models: downloads
+workspace.stt.whisper -> models.whisper_model: loads
+workspace.llm.corrector -> models.llm_model: loads

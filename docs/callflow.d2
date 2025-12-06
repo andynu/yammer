@@ -1,0 +1,82 @@
+# Yammer Dictation Call Flow
+
+direction: down
+
+# Trigger
+hotkey: User presses Ctrl+Alt+D
+
+# Phase 1: Audio Capture
+phase1: 1. Audio Capture {
+  start: Start Recording
+  capture: cpal AudioCapture
+  chunks: Audio Chunks (50ms)
+  vad: VAD Processor
+  detect: Speech Detection
+  resample: Resample to 16kHz
+  samples: Audio Samples
+
+  start -> capture
+  capture -> chunks
+  chunks -> vad
+  vad -> detect
+  detect -> resample: speech end
+  resample -> samples
+}
+
+# Phase 2: Transcription
+phase2: 2. Transcription {
+  load: Load Whisper Model
+  infer: Whisper Inference
+  filter: Filter Hallucinations
+  transcript: Raw Transcript
+
+  load -> infer
+  infer -> filter
+  filter -> transcript
+}
+
+# Phase 3: LLM Correction
+phase3: 3. LLM Correction {
+  prompt: Build Correction Prompt
+  llm: TinyLlama Inference
+  clean: Clean Output
+  corrected: Corrected Text
+
+  prompt -> llm
+  llm -> clean
+  clean -> corrected
+}
+
+# Phase 4: Output
+phase4: 4. Text Output {
+  method: Check Output Method
+  type: xdotool type
+  clipboard: xclip + Ctrl+V
+  done: Text in Target App
+
+  method -> type: type method
+  method -> clipboard: clipboard method
+  type -> done
+  clipboard -> done
+}
+
+# Main flow between phases
+hotkey -> phase1.start: trigger
+phase1.samples -> phase2.load: 16kHz audio
+phase2.transcript -> phase3.prompt: raw text
+phase3.corrected -> phase4.method: final text
+
+# UI Updates (parallel)
+ui: GUI Updates {
+  waveform: Waveform Display
+  status: Status Indicator
+  text: Transcript Display
+}
+
+phase1.chunks -> ui.waveform: audio levels
+phase1 -> ui.status: Listening
+phase2 -> ui.status: Processing
+phase3 -> ui.status: Correcting
+phase4 -> ui.status: Done
+phase2.transcript -> ui.text: show text
+phase3.corrected -> ui.text: update text
