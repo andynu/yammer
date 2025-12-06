@@ -39,6 +39,62 @@ html, body {
   gap: 8px;
 }
 
+/* Record button - clear toggle */
+.record-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: #444;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.2s, transform 0.1s, box-shadow 0.2s;
+}
+
+.record-btn:hover {
+  background: #555;
+  transform: scale(1.05);
+}
+
+.record-btn:active {
+  transform: scale(0.95);
+}
+
+.record-btn .mic-icon {
+  fill: #aaa;
+  transition: fill 0.2s;
+}
+
+.record-btn:hover .mic-icon {
+  fill: #e0e0e0;
+}
+
+/* Recording state - red and pulsing */
+.record-btn.recording {
+  background: #e53935;
+  box-shadow: 0 0 12px rgba(229, 57, 53, 0.6);
+  animation: record-pulse 1.5s infinite;
+}
+
+.record-btn.recording .mic-icon {
+  fill: white;
+}
+
+.record-btn.recording:hover {
+  background: #f44336;
+}
+
+@keyframes record-pulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(229, 57, 53, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(229, 57, 53, 0.8);
+  }
+}
+
 /* Close button */
 .close-btn {
   margin-left: auto;

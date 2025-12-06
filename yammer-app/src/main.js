@@ -58,6 +58,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Get UI elements
   const statusIndicator = document.querySelector('.status-indicator');
   const statusText = document.querySelector('.status-text');
+  const recordButton = document.querySelector('.record-btn');
   const appContainer = document.querySelector('.app-container');
   const appWindow = getCurrentWindow();
 
@@ -221,6 +222,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Update status indicator
     statusIndicator.className = `status-indicator ${state.status}`;
 
+    // Update record button - shows recording state
+    if (state.isRunning) {
+      recordButton.classList.add('recording');
+    } else {
+      recordButton.classList.remove('recording');
+    }
+
     // Update status text
     const statusLabels = {
       idle: 'Ready',
@@ -245,7 +253,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     } else {
       transcriptText.textContent = state.pipelineInitialized
-        ? 'Press Ctrl+Shift+Space to start dictating...'
+        ? 'Click record or press Ctrl+Shift+Space'
         : 'Initializing...';
       transcriptText.classList.add('placeholder');
       transcriptText.classList.remove('partial');
@@ -387,64 +395,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Listen for global hotkey dictation toggle
   await listen('dictation-toggle', toggleDictation);
 
-  // Waveform press-and-hold or click-to-toggle dictation
-  const waveformContainer = document.querySelector('.waveform-container');
-  let waveformMouseDownTime = 0;
-  const HOLD_THRESHOLD_MS = 200; // Longer than this = hold, shorter = click
+  // Record button - clear toggle behavior
+  const recordBtn = document.querySelector('.record-btn');
 
-  waveformContainer.addEventListener('mousedown', async (e) => {
+  recordBtn.addEventListener('click', async (e) => {
     e.stopPropagation(); // Don't trigger window drag
-    waveformMouseDownTime = Date.now();
-
-    // If not running, start immediately for press-and-hold
-    if (!state.isRunning) {
-      console.log('Waveform mousedown: starting dictation');
-      try {
-        if (!state.pipelineInitialized) {
-          await initializePipeline();
-        }
-        await invoke('start_dictation');
-      } catch (err) {
-        console.error('Failed to start dictation:', err);
-      }
-    }
+    console.log('Record button clicked');
+    await toggleDictation();
   });
 
-  waveformContainer.addEventListener('mouseup', async (e) => {
+  // Prevent mousedown from triggering drag
+  recordBtn.addEventListener('mousedown', (e) => {
     e.stopPropagation();
-    const holdDuration = Date.now() - waveformMouseDownTime;
-
-    if (holdDuration >= HOLD_THRESHOLD_MS) {
-      // Long press: stop recording if running
-      if (state.isRunning) {
-        console.log('Waveform mouseup after hold: stopping dictation');
-        try {
-          await invoke('stop_dictation');
-        } catch (err) {
-          console.error('Failed to stop dictation:', err);
-        }
-      }
-    }
-    // Short click is already handled by mousedown starting
-    // so nothing extra needed here
-  });
-
-  // Handle case where mouse leaves the waveform while pressed
-  waveformContainer.addEventListener('mouseleave', async (e) => {
-    // If we started recording with press-and-hold and mouse leaves,
-    // stop recording to avoid stuck state
-    if (waveformMouseDownTime > 0 && state.isRunning) {
-      const holdDuration = Date.now() - waveformMouseDownTime;
-      if (holdDuration >= HOLD_THRESHOLD_MS) {
-        console.log('Waveform mouseleave during hold: stopping dictation');
-        try {
-          await invoke('stop_dictation');
-        } catch (err) {
-          console.error('Failed to stop dictation:', err);
-        }
-      }
-    }
-    waveformMouseDownTime = 0;
   });
 
   // Animate waveform decay when not listening
