@@ -1,0 +1,103 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.16
+        id: cuda-toolkit
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart"]'
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libasound2-dev \
+            libclang-dev \
+            cmake
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: yammer-app/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Install frontend dependencies
+        working-directory: yammer-app
+        run: npm ci
+
+      - name: Build Tauri app
+        working-directory: yammer-app
+        run: npm run tauri build
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yammer-linux-deb
+          path: target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+      - name: Upload rpm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yammer-linux-rpm
+          path: target/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yammer-linux-appimage
+          path: target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  release:
+    needs: build-linux
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/yammer-linux-deb/*.deb
+            artifacts/yammer-linux-rpm/*.rpm
+            artifacts/yammer-linux-appimage/*.AppImage
+          draft: true
+          generate_release_notes: true
