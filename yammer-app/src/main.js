@@ -144,22 +144,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 300);
   });
 
-  // Close button handler - save position then quit
+  // Close button handler - minimize to tray instead of quit
   const closeBtn = document.querySelector('.close-btn');
   closeBtn.addEventListener('mousedown', async (e) => {
     e.stopPropagation();
     e.preventDefault();
-    console.log('Close button clicked');
+    console.log('Close button clicked - minimizing to tray');
     await saveCurrentPosition();
-    await invoke('quit_app');
+    await appWindow.hide();
   });
 
-  // Escape key to close
+  // Escape key to minimize to tray
   document.addEventListener('keydown', async (e) => {
     if (e.key === 'Escape') {
-      console.log('Escape pressed');
+      console.log('Escape pressed - minimizing to tray');
       await saveCurrentPosition();
-      await invoke('quit_app');
+      await appWindow.hide();
     }
   });
 
