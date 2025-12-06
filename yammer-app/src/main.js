@@ -387,11 +387,64 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Listen for global hotkey dictation toggle
   await listen('dictation-toggle', toggleDictation);
 
-  // Click on waveform to toggle dictation
+  // Waveform press-and-hold or click-to-toggle dictation
   const waveformContainer = document.querySelector('.waveform-container');
-  waveformContainer.addEventListener('click', (e) => {
+  let waveformMouseDownTime = 0;
+  const HOLD_THRESHOLD_MS = 200; // Longer than this = hold, shorter = click
+
+  waveformContainer.addEventListener('mousedown', async (e) => {
     e.stopPropagation(); // Don't trigger window drag
-    toggleDictation();
+    waveformMouseDownTime = Date.now();
+
+    // If not running, start immediately for press-and-hold
+    if (!state.isRunning) {
+      console.log('Waveform mousedown: starting dictation');
+      try {
+        if (!state.pipelineInitialized) {
+          await initializePipeline();
+        }
+        await invoke('start_dictation');
+      } catch (err) {
+        console.error('Failed to start dictation:', err);
+      }
+    }
+  });
+
+  waveformContainer.addEventListener('mouseup', async (e) => {
+    e.stopPropagation();
+    const holdDuration = Date.now() - waveformMouseDownTime;
+
+    if (holdDuration >= HOLD_THRESHOLD_MS) {
+      // Long press: stop recording if running
+      if (state.isRunning) {
+        console.log('Waveform mouseup after hold: stopping dictation');
+        try {
+          await invoke('stop_dictation');
+        } catch (err) {
+          console.error('Failed to stop dictation:', err);
+        }
+      }
+    }
+    // Short click is already handled by mousedown starting
+    // so nothing extra needed here
+  });
+
+  // Handle case where mouse leaves the waveform while pressed
+  waveformContainer.addEventListener('mouseleave', async (e) => {
+    // If we started recording with press-and-hold and mouse leaves,
+    // stop recording to avoid stuck state
+    if (waveformMouseDownTime > 0 && state.isRunning) {
+      const holdDuration = Date.now() - waveformMouseDownTime;
+      if (holdDuration >= HOLD_THRESHOLD_MS) {
+        console.log('Waveform mouseleave during hold: stopping dictation');
+        try {
+          await invoke('stop_dictation');
+        } catch (err) {
+          console.error('Failed to stop dictation:', err);
+        }
+      }
+    }
+    waveformMouseDownTime = 0;
   });
 
   // Animate waveform decay when not listening
