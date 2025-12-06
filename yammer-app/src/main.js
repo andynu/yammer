@@ -408,8 +408,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Listen for global hotkey dictation toggle
+  // Start dictation (only if not already running)
+  async function startDictation() {
+    // Block if not initialized
+    if (!state.pipelineInitialized) {
+      console.log('Pipeline not initialized yet, ignoring start');
+      return;
+    }
+
+    // If already running, don't do anything
+    if (state.isRunning) {
+      console.log('Already recording, ignoring start');
+      return;
+    }
+
+    console.log('Starting dictation (from hidden window)');
+
+    try {
+      await invoke('start_dictation');
+      console.log('Dictation started');
+    } catch (e) {
+      console.error('Start dictation error:', e);
+    }
+  }
+
+  // Listen for global hotkey events
   await listen('dictation-toggle', toggleDictation);
+  await listen('dictation-start', startDictation);
 
   // Record button - clear toggle behavior
   const recordBtn = document.querySelector('.record-btn');

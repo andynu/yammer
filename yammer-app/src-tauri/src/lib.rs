@@ -4,9 +4,7 @@ mod pipeline;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Emitter, State};
-#[cfg(debug_assertions)]
-use tauri::Manager;
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
@@ -374,9 +372,35 @@ pub fn run() {
                     if shortcut == &dictate_shortcut {
                         debug!("Dictation hotkey pressed (Ctrl+Shift+Space)");
 
-                        // Emit event to frontend to toggle dictation
-                        if let Err(e) = app.emit("dictation-toggle", ()) {
-                            error!("Failed to emit dictation-toggle: {}", e);
+                        // Check if window was hidden/minimized
+                        let was_hidden = if let Some(window) = app.get_webview_window("main") {
+                            let was_visible = window.is_visible().unwrap_or(true);
+                            if !was_visible {
+                                debug!("Window was hidden, showing without focus");
+                                // show() brings the window to view without focusing it
+                                if let Err(e) = window.show() {
+                                    error!("Failed to show window: {}", e);
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        // Emit appropriate event based on visibility state:
+                        // - If window was hidden: start dictation (don't toggle, always start)
+                        // - If window was visible: toggle dictation
+                        if was_hidden {
+                            debug!("Window was hidden, starting dictation");
+                            if let Err(e) = app.emit("dictation-start", ()) {
+                                error!("Failed to emit dictation-start: {}", e);
+                            }
+                        } else {
+                            if let Err(e) = app.emit("dictation-toggle", ()) {
+                                error!("Failed to emit dictation-toggle: {}", e);
+                            }
                         }
                     }
                 })
