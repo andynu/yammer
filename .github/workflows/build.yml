@@ -36,7 +36,8 @@ jobs:
             patchelf \
             libasound2-dev \
             libclang-dev \
-            cmake
+            cmake \
+            libfuse2
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
