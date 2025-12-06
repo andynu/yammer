@@ -151,6 +151,12 @@ impl DictationPipeline {
         self.transcriber.is_some()
     }
 
+    /// Get a handle to the cancel flag that can be used to stop the pipeline
+    /// without needing to hold the pipeline lock
+    pub fn get_cancel_handle(&self) -> Arc<AtomicBool> {
+        self.is_cancelled.clone()
+    }
+
     fn send_state(&self, state: PipelineState) {
         debug!("Pipeline state: {:?}", state);
         let _ = self.event_tx.try_send(PipelineEvent::StateChanged(state));
@@ -167,12 +173,6 @@ impl DictationPipeline {
     fn send_error(&self, error: String) {
         error!("Pipeline error: {}", error);
         let _ = self.event_tx.try_send(PipelineEvent::Error(error));
-    }
-
-    /// Cancel any in-progress operation
-    pub fn cancel(&self) {
-        info!("Pipeline cancel requested");
-        self.is_cancelled.store(true, Ordering::SeqCst);
     }
 
     /// Reset cancelled flag

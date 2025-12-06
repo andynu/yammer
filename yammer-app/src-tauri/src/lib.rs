@@ -3,6 +3,7 @@
 mod pipeline;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, State};
 #[cfg(debug_assertions)]
 use tauri::Manager;
@@ -18,6 +19,8 @@ use yammer_output::OutputMethod;
 pub struct AppState {
     pipeline: Arc<Mutex<Option<DictationPipeline>>>,
     is_running: Arc<Mutex<bool>>,
+    /// Cancel handle for the current dictation session (can be used without pipeline lock)
+    cancel_handle: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     event_tx: mpsc::Sender<PipelineEvent>,
 }
 
@@ -138,15 +141,26 @@ async fn start_dictation(
         }
     }
 
-    // Mark as running
+    // Mark as running and get cancel handle
     {
         let mut is_running = state.is_running.lock().await;
         *is_running = true;
     }
 
+    // Get cancel handle from pipeline (while we have the lock briefly)
+    {
+        let pipeline_guard = state.pipeline.lock().await;
+        if let Some(ref pipeline) = *pipeline_guard {
+            let cancel_handle = pipeline.get_cancel_handle();
+            let mut handle_guard = state.cancel_handle.lock().await;
+            *handle_guard = Some(cancel_handle);
+        }
+    }
+
     // Get pipeline reference for blocking task
     let pipeline_state = state.pipeline.clone();
     let is_running_state = state.is_running.clone();
+    let cancel_handle_state = state.cancel_handle.clone();
 
     // Run pipeline in blocking task (audio capture isn't Send-safe)
     tokio::task::spawn_blocking(move || {
@@ -161,19 +175,21 @@ async fn start_dictation(
             }
         };
 
-        // Mark as no longer running
+        // Mark as no longer running and clear cancel handle
         {
             let rt = tokio::runtime::Handle::current();
             let mut is_running = rt.block_on(is_running_state.lock());
             *is_running = false;
         }
+        {
+            let rt = tokio::runtime::Handle::current();
+            let mut cancel_handle = rt.block_on(cancel_handle_state.lock());
+            *cancel_handle = None;
+        }
 
         match result {
             Ok(text) => {
                 info!("Dictation completed successfully: \"{}\"", text);
-            }
-            Err(ref e) if e == "Cancelled" => {
-                info!("Dictation was cancelled");
             }
             Err(ref e) => {
                 error!("Dictation failed: {}", e);
@@ -189,12 +205,13 @@ async fn start_dictation(
 async fn stop_dictation(state: State<'_, AppState>) -> Result<(), String> {
     info!("Stop dictation command received");
 
-    let pipeline_guard = state.pipeline.lock().await;
-    if let Some(ref pipeline) = *pipeline_guard {
+    // Use the cancel handle (doesn't require pipeline lock)
+    let cancel_handle_guard = state.cancel_handle.lock().await;
+    if let Some(ref handle) = *cancel_handle_guard {
         info!("Signaling pipeline to stop and process audio");
-        pipeline.cancel();
+        handle.store(true, Ordering::SeqCst);
     } else {
-        warn!("No pipeline to stop");
+        warn!("No active dictation session to stop");
     }
 
     Ok(())
@@ -337,6 +354,7 @@ pub fn run() {
     let app_state = AppState {
         pipeline: Arc::new(Mutex::new(None)),
         is_running: Arc::new(Mutex::new(false)),
+        cancel_handle: Arc::new(Mutex::new(None)),
         event_tx,
     };
 
