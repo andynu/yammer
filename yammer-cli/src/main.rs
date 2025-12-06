@@ -853,7 +853,9 @@ async fn dictate(
             yammer_audio::VadState::Speech | yammer_audio::VadState::MaybeSilence => {
                 DictateState::Recording
             }
-            _ => DictateState::Listening,
+            yammer_audio::VadState::Silence | yammer_audio::VadState::MaybeSpeech => {
+                DictateState::Listening
+            }
         };
 
         // Update status display
