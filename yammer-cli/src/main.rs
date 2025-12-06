@@ -364,7 +364,8 @@ async fn download_models(dry_run: bool, all: bool, specific_model: Option<String
     }
 
     // Download each model
-    println!("\nDownloading to {:?}...\n", manager.model_path(&to_download[0]).parent().unwrap());
+    let first_model = to_download.first().expect("to_download verified non-empty above");
+    println!("\nDownloading to {:?}...\n", manager.model_path(first_model).parent().unwrap());
 
     for model in to_download {
         let pb = ProgressBar::new(model.size_bytes);
