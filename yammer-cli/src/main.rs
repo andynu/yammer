@@ -31,6 +31,18 @@ enum ConfigAction {
     Init,
 }
 
+/// Action to perform for hashes command
+enum HashesAction {
+    /// List all verified hashes
+    List,
+    /// Print path to hashes file
+    Path,
+    /// Clear all verified hashes
+    Clear,
+    /// Clear hash for a specific model
+    ClearModel(String),
+}
+
 #[derive(Parser)]
 #[command(name = "yammer")]
 #[command(about = "Linux dictation app - local speech-to-text with LLM correction")]
@@ -259,7 +271,16 @@ async fn main() -> Result<()> {
             clear_model,
             path,
         }) => {
-            hashes_cmd(clear, clear_model, path)?;
+            let action = if path {
+                HashesAction::Path
+            } else if clear {
+                HashesAction::Clear
+            } else if let Some(model_id) = clear_model {
+                HashesAction::ClearModel(model_id)
+            } else {
+                HashesAction::List
+            };
+            hashes_cmd(action)?;
         }
         None => {
             println!("yammer - Linux dictation app");
@@ -1176,53 +1197,48 @@ fn config_cmd(action: ConfigAction) -> Result<()> {
     Ok(())
 }
 
-fn hashes_cmd(clear: bool, clear_model: Option<String>, show_path: bool) -> Result<()> {
+fn hashes_cmd(action: HashesAction) -> Result<()> {
     let hashes_path = VerifiedHashes::default_path();
 
-    // --path: show path to hashes file
-    if show_path {
-        println!("{}", hashes_path.display());
-        return Ok(());
-    }
-
-    let mut hashes = VerifiedHashes::load();
-
-    // --clear: clear all hashes
-    if clear {
-        hashes.clear();
-        hashes
-            .save()
-            .map_err(|e| anyhow::anyhow!("Failed to save hashes: {}", e))?;
-        println!("Cleared all verified hashes.");
-        return Ok(());
-    }
-
-    // --clear-model: clear hash for a specific model
-    if let Some(model_id) = clear_model {
-        if hashes.remove(&model_id).is_some() {
+    match action {
+        HashesAction::Path => {
+            println!("{}", hashes_path.display());
+        }
+        HashesAction::Clear => {
+            let mut hashes = VerifiedHashes::load();
+            hashes.clear();
             hashes
                 .save()
                 .map_err(|e| anyhow::anyhow!("Failed to save hashes: {}", e))?;
-            println!("Cleared hash for model: {}", model_id);
-        } else {
-            println!("No hash found for model: {}", model_id);
+            println!("Cleared all verified hashes.");
         }
-        return Ok(());
-    }
+        HashesAction::ClearModel(model_id) => {
+            let mut hashes = VerifiedHashes::load();
+            if hashes.remove(&model_id).is_some() {
+                hashes
+                    .save()
+                    .map_err(|e| anyhow::anyhow!("Failed to save hashes: {}", e))?;
+                println!("Cleared hash for model: {}", model_id);
+            } else {
+                println!("No hash found for model: {}", model_id);
+            }
+        }
+        HashesAction::List => {
+            let hashes = VerifiedHashes::load();
+            println!("Verified model checksums:\n");
+            println!("File: {}\n", hashes_path.display());
 
-    // Default: show all verified hashes
-    println!("Verified model checksums:\n");
-    println!("File: {}\n", hashes_path.display());
+            if hashes.hashes.is_empty() {
+                println!("No verified hashes yet. Hashes are stored on first download of each model.");
+            } else {
+                let mut sorted: Vec<_> = hashes.hashes.iter().collect();
+                sorted.sort_by_key(|(k, _)| k.as_str());
 
-    if hashes.hashes.is_empty() {
-        println!("No verified hashes yet. Hashes are stored on first download of each model.");
-    } else {
-        let mut sorted: Vec<_> = hashes.hashes.iter().collect();
-        sorted.sort_by_key(|(k, _)| k.as_str());
-
-        for (model_id, sha256) in sorted {
-            println!("{}", model_id);
-            println!("  SHA256: {}", sha256);
+                for (model_id, sha256) in sorted {
+                    println!("{}", model_id);
+                    println!("  SHA256: {}", sha256);
+                }
+            }
         }
     }
 
