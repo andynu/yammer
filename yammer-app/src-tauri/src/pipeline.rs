@@ -21,6 +21,7 @@ pub enum PipelineState {
     Correcting,
     Done,
     Error,
+    Discarded,
 }
 
 impl PipelineState {
@@ -32,6 +33,7 @@ impl PipelineState {
             PipelineState::Correcting => "correcting",
             PipelineState::Done => "done",
             PipelineState::Error => "error",
+            PipelineState::Discarded => "discarded",
         }
     }
 }
@@ -73,6 +75,8 @@ impl Default for PipelineConfig {
 pub struct DictationPipeline {
     config: PipelineConfig,
     is_cancelled: Arc<AtomicBool>,
+    /// If true, cancel completely without processing/outputting
+    is_discarded: Arc<AtomicBool>,
     transcriber: Option<Arc<Transcriber>>,
     corrector: Option<Arc<Corrector>>,
     event_tx: mpsc::Sender<PipelineEvent>,
@@ -84,6 +88,7 @@ impl DictationPipeline {
         Self {
             config,
             is_cancelled: Arc::new(AtomicBool::new(false)),
+            is_discarded: Arc::new(AtomicBool::new(false)),
             transcriber: None,
             corrector: None,
             event_tx,
@@ -157,6 +162,12 @@ impl DictationPipeline {
         self.is_cancelled.clone()
     }
 
+    /// Get a handle to the discard flag that can be used to discard the recording
+    /// without needing to hold the pipeline lock
+    pub fn get_discard_handle(&self) -> Arc<AtomicBool> {
+        self.is_discarded.clone()
+    }
+
     fn send_state(&self, state: PipelineState) {
         debug!("Pipeline state: {:?}", state);
         let _ = self.event_tx.try_send(PipelineEvent::StateChanged(state));
@@ -175,13 +186,18 @@ impl DictationPipeline {
         let _ = self.event_tx.try_send(PipelineEvent::Error(error));
     }
 
-    /// Reset cancelled flag
+    /// Reset cancelled and discarded flags
     fn reset_cancel(&self) {
         self.is_cancelled.store(false, Ordering::SeqCst);
+        self.is_discarded.store(false, Ordering::SeqCst);
     }
 
     fn is_cancelled(&self) -> bool {
         self.is_cancelled.load(Ordering::SeqCst)
+    }
+
+    fn is_discarded(&self) -> bool {
+        self.is_discarded.load(Ordering::SeqCst)
     }
 
     /// Run the complete dictation pipeline (blocking)
@@ -202,7 +218,7 @@ impl DictationPipeline {
         let samples = match self.listen_blocking() {
             Ok(s) => s,
             Err(e) => {
-                if e == "No audio recorded" {
+                if e == "No audio recorded" || e == "Discarded" {
                     self.send_state(PipelineState::Idle);
                 } else {
                     self.send_error(e.clone());
@@ -212,15 +228,23 @@ impl DictationPipeline {
             }
         };
 
+        // Check if discarded after listening - skip all processing
+        if self.is_discarded() {
+            info!("Recording discarded by user");
+            self.send_state(PipelineState::Discarded);
+            return Err("Discarded".to_string());
+        }
+
         // Reset cancel flag - user clicked stop to END listening, not to cancel processing
         // We have audio samples, so proceed with transcription and correction
-        self.reset_cancel();
+        // Note: we do NOT reset is_discarded - it can be set at any time
+        self.is_cancelled.store(false, Ordering::SeqCst);
 
         // 2. Transcribe
         let text = match self.transcribe_blocking(&samples) {
             Ok(t) => t,
             Err(e) => {
-                if e == "Cancelled" {
+                if e == "Cancelled" || e == "Discarded" {
                     self.send_state(PipelineState::Idle);
                 } else {
                     self.send_error(e.clone());
@@ -230,10 +254,23 @@ impl DictationPipeline {
             }
         };
 
+        // Check if discarded after transcription - skip output
+        if self.is_discarded() {
+            info!("Recording discarded by user after transcription");
+            self.send_state(PipelineState::Discarded);
+            return Err("Discarded".to_string());
+        }
+
         // 3. Correct (optional)
         let corrected = match self.correct_blocking(&text) {
             Ok(t) => t,
             Err(e) if e == "Cancelled" => {
+                // Check for discard during correction
+                if self.is_discarded() {
+                    info!("Recording discarded by user during correction");
+                    self.send_state(PipelineState::Discarded);
+                    return Err("Discarded".to_string());
+                }
                 // Output uncorrected text on cancel during correction
                 self.output_blocking(&text)?;
                 return Ok(text);
@@ -245,6 +282,13 @@ impl DictationPipeline {
                 return Ok(text);
             }
         };
+
+        // Final check before output
+        if self.is_discarded() {
+            info!("Recording discarded by user before output");
+            self.send_state(PipelineState::Discarded);
+            return Err("Discarded".to_string());
+        }
 
         // 4. Output text
         match self.output_blocking(&corrected) {
@@ -309,7 +353,13 @@ impl DictationPipeline {
             // Always collect samples while listening (for click-to-toggle mode)
             all_samples.extend_from_slice(&chunk);
 
-            // Check for cancellation (user clicked stop)
+            // Check for discard (user wants to cancel completely)
+            if self.is_discarded() {
+                info!("Recording discarded by user during listening");
+                return Err("Discarded".to_string());
+            }
+
+            // Check for cancellation (user clicked stop to process audio)
             if self.is_cancelled() {
                 info!("Listening stopped by user, {} samples collected", all_samples.len());
 

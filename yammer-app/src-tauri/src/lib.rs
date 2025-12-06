@@ -24,6 +24,8 @@ pub struct AppState {
     is_running: Arc<Mutex<bool>>,
     /// Cancel handle for the current dictation session (can be used without pipeline lock)
     cancel_handle: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    /// Discard handle for the current dictation session (cancels completely without output)
+    discard_handle: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     event_tx: mpsc::Sender<PipelineEvent>,
 }
 
@@ -150,13 +152,17 @@ async fn start_dictation(
         *is_running = true;
     }
 
-    // Get cancel handle from pipeline (while we have the lock briefly)
+    // Get cancel and discard handles from pipeline (while we have the lock briefly)
     {
         let pipeline_guard = state.pipeline.lock().await;
         if let Some(ref pipeline) = *pipeline_guard {
             let cancel_handle = pipeline.get_cancel_handle();
             let mut handle_guard = state.cancel_handle.lock().await;
             *handle_guard = Some(cancel_handle);
+
+            let discard_handle = pipeline.get_discard_handle();
+            let mut discard_guard = state.discard_handle.lock().await;
+            *discard_guard = Some(discard_handle);
         }
     }
 
@@ -164,6 +170,7 @@ async fn start_dictation(
     let pipeline_state = state.pipeline.clone();
     let is_running_state = state.is_running.clone();
     let cancel_handle_state = state.cancel_handle.clone();
+    let discard_handle_state = state.discard_handle.clone();
 
     // Run pipeline in blocking task (audio capture isn't Send-safe)
     tokio::task::spawn_blocking(move || {
@@ -178,7 +185,7 @@ async fn start_dictation(
             }
         };
 
-        // Mark as no longer running and clear cancel handle
+        // Mark as no longer running and clear handles
         {
             let rt = tokio::runtime::Handle::current();
             let mut is_running = rt.block_on(is_running_state.lock());
@@ -188,6 +195,11 @@ async fn start_dictation(
             let rt = tokio::runtime::Handle::current();
             let mut cancel_handle = rt.block_on(cancel_handle_state.lock());
             *cancel_handle = None;
+        }
+        {
+            let rt = tokio::runtime::Handle::current();
+            let mut discard_handle = rt.block_on(discard_handle_state.lock());
+            *discard_handle = None;
         }
 
         match result {
@@ -215,6 +227,29 @@ async fn stop_dictation(state: State<'_, AppState>) -> Result<(), String> {
         handle.store(true, Ordering::SeqCst);
     } else {
         warn!("No active dictation session to stop");
+    }
+
+    Ok(())
+}
+
+/// Discard the current dictation completely (no output)
+#[tauri::command]
+async fn discard_dictation(state: State<'_, AppState>) -> Result<(), String> {
+    info!("Discard dictation command received");
+
+    // Use the discard handle (doesn't require pipeline lock)
+    let discard_handle_guard = state.discard_handle.lock().await;
+    if let Some(ref handle) = *discard_handle_guard {
+        info!("Signaling pipeline to discard recording");
+        handle.store(true, Ordering::SeqCst);
+    } else {
+        warn!("No active dictation session to discard");
+    }
+
+    // Also signal cancel to stop listening immediately
+    let cancel_handle_guard = state.cancel_handle.lock().await;
+    if let Some(ref handle) = *cancel_handle_guard {
+        handle.store(true, Ordering::SeqCst);
     }
 
     Ok(())
@@ -358,6 +393,7 @@ pub fn run() {
         pipeline: Arc::new(Mutex::new(None)),
         is_running: Arc::new(Mutex::new(false)),
         cancel_handle: Arc::new(Mutex::new(None)),
+        discard_handle: Arc::new(Mutex::new(None)),
         event_tx,
     };
 
@@ -581,6 +617,7 @@ pub fn run() {
             initialize_pipeline,
             start_dictation,
             stop_dictation,
+            discard_dictation,
             toggle_dictation,
             get_pipeline_state,
             check_models,

@@ -55,6 +55,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     setTimeout(() => playTone(440, 0.12, 0.2), 160); // A4
   }
 
+  // Audio feedback for discarded recording (low error-like tone)
+  function playDiscardSound() {
+    playTone(220, 0.15, 0.25);  // A3 (lower, longer)
+  }
+
   // Get UI elements
   const statusIndicator = document.querySelector('.status-indicator');
   const statusText = document.querySelector('.status-text');
@@ -144,12 +149,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     e.stopPropagation();
   });
 
-  // Escape key to minimize to tray
+  // Escape key - discard dictation if active, otherwise minimize to tray
   document.addEventListener('keydown', async (e) => {
     if (e.key === 'Escape') {
-      console.log('Escape pressed - minimizing to tray');
-      await saveCurrentPosition();
-      await appWindow.hide();
+      // If dictation is running, discard it
+      if (state.isRunning) {
+        console.log('Escape pressed - discarding recording');
+        try {
+          await invoke('discard_dictation');
+        } catch (err) {
+          console.error('Failed to discard dictation:', err);
+        }
+      } else {
+        console.log('Escape pressed - minimizing to tray');
+        await saveCurrentPosition();
+        await appWindow.hide();
+      }
     }
   });
 
@@ -244,7 +259,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       processing: 'Processing...',
       correcting: 'Correcting...',
       done: 'Done',
-      error: 'Error'
+      error: 'Error',
+      discarded: 'Discarded'
     };
     // Show "Loading..." during initialization
     if (!state.pipelineInitialized && state.status === 'processing') {
@@ -304,6 +320,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (newState === 'done' && previousState !== 'done') {
       // Finished successfully
       playStopSound();
+    } else if (newState === 'discarded' && previousState !== 'discarded') {
+      // Recording was discarded
+      playDiscardSound();
     }
     previousState = newState;
 
@@ -316,14 +335,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       state.isPartial = false;
     }
 
-    // Return to idle after showing done/error briefly
-    if (newState === 'done' || newState === 'error') {
+    // Return to idle after showing done/error/discarded briefly
+    if (newState === 'done' || newState === 'error' || newState === 'discarded') {
       setTimeout(() => {
         if (state.status === newState) {
           state.status = 'idle';
           updateUI();
         }
-      }, 2000);
+      }, newState === 'discarded' ? 1000 : 2000);  // Shorter timeout for discarded
     }
 
     updateUI();
