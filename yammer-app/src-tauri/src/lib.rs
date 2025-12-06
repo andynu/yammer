@@ -40,6 +40,11 @@ async fn initialize_pipeline(
         .map(|m| app_config.models.model_dir.join(&m))
         .unwrap_or_else(|| app_config.whisper_model_path());
 
+    info!("Whisper model path: {:?}", whisper_path);
+    if !whisper_path.exists() {
+        error!("Whisper model not found at {:?}", whisper_path);
+    }
+
     // Determine LLM model path if correction enabled
     let llm_path = if use_correction {
         llm_model
@@ -49,11 +54,28 @@ async fn initialize_pipeline(
         None
     };
 
+    if let Some(ref path) = llm_path {
+        info!("LLM model path: {:?}", path);
+        if !path.exists() {
+            warn!("LLM model not found at {:?}", path);
+        }
+    } else {
+        info!("LLM correction disabled");
+    }
+
     // Determine output method from config
     let output_method = match app_config.output.method.as_str() {
         "clipboard" => OutputMethod::Clipboard,
         _ => OutputMethod::Type,
     };
+    info!("Output method: {:?}", output_method);
+
+    // Audio device
+    if let Some(ref device) = app_config.audio.device {
+        info!("Audio device: {}", device);
+    } else {
+        info!("Audio device: system default");
+    }
 
     let pipeline_config = PipelineConfig {
         whisper_model_path: whisper_path,
@@ -65,12 +87,19 @@ async fn initialize_pipeline(
     };
 
     let mut pipeline = DictationPipeline::new(pipeline_config, state.event_tx.clone());
-    pipeline.initialize()?;
+    match pipeline.initialize() {
+        Ok(()) => {
+            info!("Pipeline initialized successfully");
+        }
+        Err(ref e) => {
+            error!("Pipeline initialization failed: {}", e);
+            return Err(e.clone());
+        }
+    }
 
     let mut pipeline_guard = state.pipeline.lock().await;
     *pipeline_guard = Some(pipeline);
 
-    info!("Pipeline initialized successfully");
     Ok(())
 }
 
@@ -95,8 +124,17 @@ async fn start_dictation(
     {
         let pipeline_guard = state.pipeline.lock().await;
         match pipeline_guard.as_ref() {
-            Some(p) if p.is_initialized() => {}
-            _ => return Err("Pipeline not initialized. Call initialize_pipeline first.".to_string()),
+            Some(p) if p.is_initialized() => {
+                info!("Pipeline is initialized, proceeding with dictation");
+            }
+            Some(_) => {
+                error!("Pipeline exists but is not initialized (models not loaded)");
+                return Err("Pipeline not initialized. Call initialize_pipeline first.".to_string());
+            }
+            None => {
+                error!("Pipeline not created yet");
+                return Err("Pipeline not initialized. Call initialize_pipeline first.".to_string());
+            }
         }
     }
 
@@ -195,13 +233,26 @@ async fn get_pipeline_state(state: State<'_, AppState>) -> Result<String, String
 /// Check if models are downloaded
 #[tauri::command]
 async fn check_models() -> Result<serde_json::Value, String> {
+    info!("Checking model availability...");
     let app_config = Config::load();
 
     let whisper_path = app_config.whisper_model_path();
     let whisper_exists = whisper_path.exists();
+    if whisper_exists {
+        info!("Whisper model found: {:?}", whisper_path);
+    } else {
+        error!("Whisper model NOT found: {:?}", whisper_path);
+    }
 
     let llm_path = app_config.llm_model_path();
     let llm_exists = llm_path.as_ref().is_some_and(|p| p.exists());
+    if let Some(ref path) = llm_path {
+        if llm_exists {
+            info!("LLM model found: {:?}", path);
+        } else {
+            warn!("LLM model NOT found: {:?}", path);
+        }
+    }
 
     Ok(serde_json::json!({
         "models_dir": app_config.models.model_dir.to_string_lossy(),

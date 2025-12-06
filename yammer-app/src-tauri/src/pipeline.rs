@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use yammer_audio::{AudioCapture, VadProcessor, VadEvent, resample_to_whisper, Vad, WHISPER_SAMPLE_RATE};
 use yammer_output::{TextOutput, OutputMethod};
@@ -93,20 +93,30 @@ impl DictationPipeline {
     /// Initialize the pipeline (load models)
     pub fn initialize(&mut self) -> Result<(), String> {
         info!("Initializing dictation pipeline...");
+        info!("Whisper model: {:?}", self.config.whisper_model_path);
 
         // Load Whisper model
         if !self.config.whisper_model_path.exists() {
-            return Err(format!(
+            let err = format!(
                 "Whisper model not found: {:?}",
                 self.config.whisper_model_path
-            ));
+            );
+            error!("{}", err);
+            return Err(err);
         }
 
-        self.transcriber = Some(Arc::new(
-            Transcriber::new(&self.config.whisper_model_path)
-                .map_err(|e| format!("Failed to load Whisper model: {}", e))?,
-        ));
-        info!("Whisper model loaded");
+        info!("Loading Whisper model...");
+        match Transcriber::new(&self.config.whisper_model_path) {
+            Ok(transcriber) => {
+                self.transcriber = Some(Arc::new(transcriber));
+                info!("Whisper model loaded successfully");
+            }
+            Err(e) => {
+                let err = format!("Failed to load Whisper model: {}", e);
+                error!("{}", err);
+                return Err(err);
+            }
+        }
 
         // Load LLM model if configured
         if self.config.use_llm_correction {
@@ -114,16 +124,25 @@ impl DictationPipeline {
                 if !llm_path.exists() {
                     warn!("LLM model not found: {:?}, correction disabled", llm_path);
                 } else {
-                    self.corrector = Some(Arc::new(
-                        Corrector::new(llm_path)
-                            .map_err(|e| format!("Failed to load LLM model: {}", e))?,
-                    ));
-                    info!("LLM model loaded");
+                    info!("Loading LLM model from {:?}...", llm_path);
+                    match Corrector::new(llm_path) {
+                        Ok(corrector) => {
+                            self.corrector = Some(Arc::new(corrector));
+                            info!("LLM model loaded successfully");
+                        }
+                        Err(e) => {
+                            let err = format!("Failed to load LLM model: {}", e);
+                            error!("{}", err);
+                            return Err(err);
+                        }
+                    }
                 }
             }
+        } else {
+            info!("LLM correction disabled");
         }
 
-        info!("Pipeline initialized successfully");
+        info!("Pipeline initialization complete");
         Ok(())
     }
 
@@ -146,6 +165,7 @@ impl DictationPipeline {
     }
 
     fn send_error(&self, error: String) {
+        error!("Pipeline error: {}", error);
         let _ = self.event_tx.try_send(PipelineEvent::Error(error));
     }
 
@@ -241,20 +261,38 @@ impl DictationPipeline {
         // Set up audio capture (use configured device or default)
         let capture = if let Some(ref device_name) = self.config.audio_device {
             info!("Using configured audio device: {}", device_name);
-            AudioCapture::with_device(device_name)
-                .map_err(|e| format!("Failed to initialize audio device '{}': {}", device_name, e))?
+            match AudioCapture::with_device(device_name) {
+                Ok(c) => c,
+                Err(e) => {
+                    let err = format!("Failed to initialize audio device '{}': {}", device_name, e);
+                    error!("{}", err);
+                    return Err(err);
+                }
+            }
         } else {
-            AudioCapture::new()
-                .map_err(|e| format!("Failed to initialize audio: {}", e))?
+            info!("Using default audio device");
+            match AudioCapture::new() {
+                Ok(c) => c,
+                Err(e) => {
+                    let err = format!("Failed to initialize audio: {}", e);
+                    error!("{}", err);
+                    return Err(err);
+                }
+            }
         };
 
         let input_sample_rate = capture.sample_rate();
         info!("Audio capture initialized: {} Hz", input_sample_rate);
 
         // Start continuous capture (50ms chunks)
-        let (_handle, mut rx) = capture
-            .start_capture(50)
-            .map_err(|e| format!("Failed to start capture: {}", e))?;
+        let (_handle, mut rx) = match capture.start_capture(50) {
+            Ok(result) => result,
+            Err(e) => {
+                let err = format!("Failed to start capture: {}", e);
+                error!("{}", err);
+                return Err(err);
+            }
+        };
 
         // VAD processor
         let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
@@ -291,6 +329,7 @@ impl DictationPipeline {
                         all_samples.extend(samples);
 
                         if all_samples.is_empty() {
+                            warn!("No speech detected");
                             return Err("No speech detected".to_string());
                         }
 
@@ -315,6 +354,7 @@ impl DictationPipeline {
                 warn!("Recording timeout (30s max)");
 
                 if all_samples.is_empty() {
+                    warn!("No speech detected (timeout)");
                     return Err("No speech detected (timeout)".to_string());
                 }
 
@@ -326,6 +366,7 @@ impl DictationPipeline {
         if speech_detected && !all_samples.is_empty() {
             self.maybe_resample(all_samples, input_sample_rate)
         } else {
+            error!("Audio capture ended unexpectedly");
             Err("Audio capture ended unexpectedly".to_string())
         }
     }
@@ -333,8 +374,11 @@ impl DictationPipeline {
     fn maybe_resample(&self, samples: Vec<f32>, input_rate: u32) -> Result<Vec<f32>, String> {
         if input_rate != WHISPER_SAMPLE_RATE {
             info!("Resampling from {} Hz to {} Hz", input_rate, WHISPER_SAMPLE_RATE);
-            resample_to_whisper(&samples, input_rate)
-                .map_err(|e| format!("Resampling failed: {}", e))
+            resample_to_whisper(&samples, input_rate).map_err(|e| {
+                let err = format!("Resampling failed: {}", e);
+                error!("{}", err);
+                err
+            })
         } else {
             Ok(samples)
         }
@@ -361,9 +405,14 @@ impl DictationPipeline {
 
         let start = Instant::now();
 
-        let transcript = transcriber
-            .transcribe(samples)
-            .map_err(|e| format!("Transcription failed: {}", e))?;
+        let transcript = match transcriber.transcribe(samples) {
+            Ok(t) => t,
+            Err(e) => {
+                let err = format!("Transcription failed: {}", e);
+                error!("{}", err);
+                return Err(err);
+            }
+        };
 
         let text = transcript.text();
         let elapsed = start.elapsed();
@@ -398,9 +447,14 @@ impl DictationPipeline {
 
         let start = Instant::now();
 
-        let result = corrector
-            .correct(text)
-            .map_err(|e| format!("Correction failed: {}", e))?;
+        let result = match corrector.correct(text) {
+            Ok(r) => r,
+            Err(e) => {
+                let err = format!("Correction failed: {}", e);
+                error!("{}", err);
+                return Err(err);
+            }
+        };
 
         let elapsed = start.elapsed();
         info!(
@@ -450,9 +504,16 @@ impl DictationPipeline {
 
         let output = TextOutput::with_method(self.config.output_method);
 
-        output
-            .output(text)
-            .map_err(|e| format!("Output failed: {}", e))?;
+        match output.output(text) {
+            Ok(()) => {
+                info!("Text output successful");
+            }
+            Err(e) => {
+                let err = format!("Output failed: {}", e);
+                error!("{}", err);
+                return Err(err);
+            }
+        }
 
         self.send_state(PipelineState::Done);
 
