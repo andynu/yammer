@@ -337,10 +337,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Return to idle after showing done/error/discarded briefly
     if (newState === 'done' || newState === 'error' || newState === 'discarded') {
-      setTimeout(() => {
+      setTimeout(async () => {
         if (state.status === newState) {
           state.status = 'idle';
           updateUI();
+
+          // Auto-hide window after successful dictation
+          if (newState === 'done') {
+            console.log('Auto-hiding window after successful dictation');
+            await saveCurrentPosition();
+            await appWindow.hide();
+          }
         }
       }, newState === 'discarded' ? 1000 : 2000);  // Shorter timeout for discarded
     }
