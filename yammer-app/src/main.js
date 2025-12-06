@@ -97,47 +97,55 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Save current window position after dragging ends
-  async function saveWindowPosition() {
+  // Save current window position
+  async function saveWindowPosition(x, y) {
     try {
-      const position = await appWindow.outerPosition();
-      console.log(`Saving window position: (${position.x}, ${position.y})`);
-      await invoke('save_window_position', {
-        x: position.x,
-        y: position.y
-      });
+      console.log(`Saving window position: (${x}, ${y})`);
+      await invoke('save_window_position', { x, y });
     } catch (e) {
       console.error('Failed to save window position:', e);
     }
   }
 
+  // Save position before app closes
+  async function saveCurrentPosition() {
+    try {
+      const position = await appWindow.outerPosition();
+      console.log(`Saving position before close: (${position.x}, ${position.y})`);
+      await invoke('save_window_position', { x: position.x, y: position.y });
+    } catch (e) {
+      console.error('Failed to save position before close:', e);
+    }
+  }
+
   // Enable window dragging on the container
-  let isDragging = false;
   appContainer.addEventListener('mousedown', (e) => {
     // Only drag on left mouse button - must be sync, not async
     // Don't drag if clicking on the close button
     if (e.button === 0 && !e.target.closest('.close-btn')) {
       e.preventDefault();
-      isDragging = true;
       appWindow.startDragging();
     }
   });
 
-  // Save position when mouse is released after a drag
-  document.addEventListener('mouseup', async () => {
-    if (isDragging) {
-      isDragging = false;
-      // Small delay to ensure window position is finalized
-      setTimeout(saveWindowPosition, 100);
-    }
+  // Listen for window move events from Tauri (fires during/after drag)
+  let saveTimeout = null;
+  appWindow.onMoved(({ payload: position }) => {
+    console.log(`Window moved to: (${position.x}, ${position.y})`);
+    // Debounce saves - only save after position stabilizes
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => {
+      saveWindowPosition(position.x, position.y);
+    }, 300);
   });
 
-  // Close button handler - use invoke to call backend quit
+  // Close button handler - save position then quit
   const closeBtn = document.querySelector('.close-btn');
   closeBtn.addEventListener('mousedown', async (e) => {
     e.stopPropagation();
     e.preventDefault();
     console.log('Close button clicked');
+    await saveCurrentPosition();
     await invoke('quit_app');
   });
 
@@ -145,6 +153,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('keydown', async (e) => {
     if (e.key === 'Escape') {
       console.log('Escape pressed');
+      await saveCurrentPosition();
       await invoke('quit_app');
     }
   });

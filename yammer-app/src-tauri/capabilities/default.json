@@ -6,6 +6,10 @@
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
+    "core:window:allow-outer-position",
+    "core:window:allow-inner-position",
+    "core:window:allow-inner-size",
+    "core:window:allow-set-position",
     "shell:allow-open",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",

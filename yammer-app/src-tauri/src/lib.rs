@@ -227,9 +227,10 @@ fn quit_app(app: AppHandle) {
 /// Save current window position to config
 #[tauri::command]
 async fn save_window_position(x: i32, y: i32) -> Result<(), String> {
-    debug!("Saving window position: ({}, {})", x, y);
+    info!("Saving window position: ({}, {})", x, y);
     let mut config = Config::load();
     config.set_window_position(x, y)?;
+    info!("Window position saved successfully");
     Ok(())
 }
 
