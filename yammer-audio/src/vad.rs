@@ -80,7 +80,9 @@ impl Vad {
     pub fn with_threshold(threshold: f32) -> Self {
         let config = VadConfig {
             speech_threshold: threshold,
-            ..Default::default()
+            speech_start_frames: DEFAULT_SPEECH_START_FRAMES,
+            speech_end_frames: DEFAULT_SPEECH_END_FRAMES,
+            min_speech_frames: 4, // ~250ms at typical frame sizes
         };
         Self::with_config(config)
     }
