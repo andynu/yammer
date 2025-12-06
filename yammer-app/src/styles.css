@@ -27,11 +27,19 @@ html, body {
   gap: 8px;
 }
 
+/* Header row - contains draggable status row and close button */
+.header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* Status row with indicator - drag region for window movement */
 .status-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1;
   cursor: grab;
 }
 
@@ -111,9 +119,8 @@ html, body {
   fill: #555;
 }
 
-/* Close button */
+/* Close button - outside drag region for clickability */
 .close-btn {
-  margin-left: auto;
   width: 20px;
   height: 20px;
   border: none;

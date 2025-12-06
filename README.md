@@ -31,19 +31,20 @@ echo $XDG_SESSION_TYPE  # Should output: x11
 
 ```bash
 # Ubuntu/Debian
-sudo apt install clang libclang-dev libasound2-dev xdotool
+sudo apt install clang libclang-dev libasound2-dev xdotool libayatana-appindicator3-dev
 
 # Arch Linux
-sudo pacman -S clang alsa-lib xdotool
+sudo pacman -S clang alsa-lib xdotool libayatana-appindicator
 
 # Fedora
-sudo dnf install clang clang-devel alsa-lib-devel xdotool
+sudo dnf install clang clang-devel alsa-lib-devel xdotool libayatana-appindicator-gtk3-devel
 ```
 
 **Why each dependency:**
 - `clang` + `libclang-dev` - Required for llama.cpp Rust bindings (LLM support)
 - `libasound2-dev` - Required for audio capture via ALSA
 - `xdotool` - Required for typing text into applications (Phase 6)
+- `libayatana-appindicator3-dev` - Required for system tray icon (Tauri UI)
 
 ### Rust Toolchain
 
