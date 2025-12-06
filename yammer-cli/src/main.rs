@@ -319,7 +319,15 @@ async fn download_models(dry_run: bool, all: bool, specific_model: Option<String
             ModelStatus::Ready { path } => {
                 already_downloaded.push((model, path));
             }
-            _ => {
+            ModelStatus::NotDownloaded => {
+                to_download.push(model);
+            }
+            ModelStatus::Downloading { .. } => {
+                // Currently downloading - still add to download queue to resume/restart
+                to_download.push(model);
+            }
+            ModelStatus::Failed { error } => {
+                eprintln!("Warning: {} previously failed: {}", model.name, error);
                 to_download.push(model);
             }
         }
