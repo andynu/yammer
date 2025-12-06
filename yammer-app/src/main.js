@@ -539,6 +539,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     await initializePipeline();
     state.status = 'idle';
+    state.transcript = '';  // Clear loading message to show ready placeholder
     updateUI();
   } catch (e) {
     console.error('Pipeline initialization failed:', e);
