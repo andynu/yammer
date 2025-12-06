@@ -27,6 +27,8 @@ pub struct AppState {
     /// Discard handle for the current dictation session (cancels completely without output)
     discard_handle: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     event_tx: mpsc::Sender<PipelineEvent>,
+    /// Last successful transcription result for "Copy Last" feature
+    last_transcription: Arc<Mutex<Option<String>>>,
 }
 
 /// Initialize the pipeline with model paths
@@ -171,6 +173,7 @@ async fn start_dictation(
     let is_running_state = state.is_running.clone();
     let cancel_handle_state = state.cancel_handle.clone();
     let discard_handle_state = state.discard_handle.clone();
+    let last_transcription_state = state.last_transcription.clone();
 
     // Run pipeline in blocking task (audio capture isn't Send-safe)
     tokio::task::spawn_blocking(move || {
@@ -205,6 +208,10 @@ async fn start_dictation(
         match result {
             Ok(text) => {
                 info!("Dictation completed successfully: \"{}\"", text);
+                // Store for "Copy Last" feature
+                let rt = tokio::runtime::Handle::current();
+                let mut last = rt.block_on(last_transcription_state.lock());
+                *last = Some(text);
             }
             Err(ref e) => {
                 error!("Dictation failed: {}", e);
@@ -389,12 +396,14 @@ pub fn run() {
     let (event_tx, mut event_rx) = mpsc::channel::<PipelineEvent>(100);
 
     // Create app state
+    let last_transcription = Arc::new(Mutex::new(None));
     let app_state = AppState {
         pipeline: Arc::new(Mutex::new(None)),
         is_running: Arc::new(Mutex::new(false)),
         cancel_handle: Arc::new(Mutex::new(None)),
         discard_handle: Arc::new(Mutex::new(None)),
         event_tx,
+        last_transcription: last_transcription.clone(),
     };
 
     tauri::Builder::default()
@@ -440,6 +449,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -522,8 +532,9 @@ pub fn run() {
             // Create system tray
             let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
             let toggle_item = MenuItem::with_id(app, "toggle", "Toggle Recording", true, None::<&str>)?;
+            let copy_last_item = MenuItem::with_id(app, "copy_last", "Copy Last Transcription", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &toggle_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &toggle_item, &copy_last_item, &quit_item])?;
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
@@ -542,6 +553,24 @@ pub fn run() {
                         info!("Tray: Toggle Recording clicked");
                         if let Err(e) = app.emit("dictation-toggle", ()) {
                             error!("Failed to emit dictation-toggle: {}", e);
+                        }
+                    }
+                    "copy_last" => {
+                        info!("Tray: Copy Last Transcription clicked");
+                        let state: State<'_, AppState> = app.state();
+                        // Clone the text out to avoid lifetime issues
+                        let text_to_copy = state.last_transcription.try_lock()
+                            .ok()
+                            .and_then(|guard| guard.clone());
+                        if let Some(text) = text_to_copy {
+                            use tauri_plugin_clipboard_manager::ClipboardExt;
+                            if let Err(e) = app.clipboard().write_text(text.clone()) {
+                                error!("Failed to copy to clipboard: {}", e);
+                            } else {
+                                info!("Copied last transcription to clipboard ({} chars)", text.len());
+                            }
+                        } else {
+                            warn!("No transcription available to copy");
                         }
                     }
                     "quit" => {
