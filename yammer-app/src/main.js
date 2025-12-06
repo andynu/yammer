@@ -122,8 +122,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Enable window dragging on the container
   appContainer.addEventListener('mousedown', (e) => {
     // Only drag on left mouse button - must be sync, not async
-    // Don't drag if clicking on the close button
-    if (e.button === 0 && !e.target.closest('.close-btn')) {
+    // Don't drag if clicking on interactive elements
+    if (e.button === 0 &&
+        !e.target.closest('.close-btn') &&
+        !e.target.closest('.transcript-area') &&
+        !e.target.closest('.record-btn') &&
+        !e.target.closest('.waveform-container')) {
       e.preventDefault();
       appWindow.startDragging();
     }
@@ -167,17 +171,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Click on transcript to copy to clipboard
   transcriptArea.addEventListener('click', async (e) => {
     e.stopPropagation(); // Don't trigger window drag
+    console.log('Transcript area clicked');
+    console.log('Current transcript:', state.transcript);
+    console.log('Transcript trimmed:', state.transcript ? state.transcript.trim() : '(empty)');
+
     if (state.transcript && state.transcript.trim()) {
+      console.log('Attempting to copy to clipboard...');
       try {
         await navigator.clipboard.writeText(state.transcript);
-        console.log('Copied to clipboard:', state.transcript);
+        console.log('SUCCESS: Copied to clipboard:', state.transcript);
 
         // Visual feedback - briefly highlight
         transcriptText.classList.add('copied');
         setTimeout(() => transcriptText.classList.remove('copied'), 300);
       } catch (err) {
-        console.error('Failed to copy:', err);
+        console.error('FAILED to copy to clipboard:', err);
+        console.error('Error name:', err.name);
+        console.error('Error message:', err.message);
       }
+    } else {
+      console.log('No transcript to copy (empty or whitespace only)');
     }
   });
 
