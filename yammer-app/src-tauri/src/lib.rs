@@ -369,14 +369,20 @@ pub fn run() {
             // Show the existing window
             if let Some(window) = app.get_webview_window("main") {
                 let was_visible = window.is_visible().unwrap_or(true);
+                let is_toggle = argv.iter().any(|arg| arg == "--toggle");
+
                 if !was_visible {
                     info!("Window was hidden, showing it");
                     let _ = window.show();
                 }
-                let _ = window.set_focus();
+
+                // Only steal focus if NOT using --toggle (dictation should not steal focus)
+                if !is_toggle {
+                    let _ = window.set_focus();
+                }
 
                 // Check if --toggle flag was passed (for GNOME shortcut integration)
-                if argv.iter().any(|arg| arg == "--toggle") {
+                if is_toggle {
                     info!("Toggle flag detected, starting dictation");
                     // Emit dictation-start since window was likely hidden
                     if !was_visible {
