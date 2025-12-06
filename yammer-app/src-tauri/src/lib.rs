@@ -10,6 +10,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_single_instance;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
@@ -361,6 +362,36 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        // Single-instance plugin must be first
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            info!("Second instance launched with args: {:?}", argv);
+
+            // Show the existing window
+            if let Some(window) = app.get_webview_window("main") {
+                let was_visible = window.is_visible().unwrap_or(true);
+                if !was_visible {
+                    info!("Window was hidden, showing it");
+                    let _ = window.show();
+                }
+                let _ = window.set_focus();
+
+                // Check if --toggle flag was passed (for GNOME shortcut integration)
+                if argv.iter().any(|arg| arg == "--toggle") {
+                    info!("Toggle flag detected, starting dictation");
+                    // Emit dictation-start since window was likely hidden
+                    if !was_visible {
+                        if let Err(e) = app.emit("dictation-start", ()) {
+                            error!("Failed to emit dictation-start: {}", e);
+                        }
+                    } else {
+                        // Window was visible, toggle dictation
+                        if let Err(e) = app.emit("dictation-toggle", ()) {
+                            error!("Failed to emit dictation-toggle: {}", e);
+                        }
+                    }
+                }
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()

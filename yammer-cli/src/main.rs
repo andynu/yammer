@@ -54,7 +54,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Launch the GUI application
-    Gui,
+    Gui {
+        /// Toggle dictation in existing instance (for keyboard shortcut integration)
+        #[arg(long)]
+        toggle: bool,
+    },
 
     /// Download required AI models
     DownloadModels {
@@ -221,8 +225,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Gui) => {
-            launch_gui()?;
+        Some(Commands::Gui { toggle }) => {
+            launch_gui(toggle)?;
         }
         Some(Commands::DownloadModels { dry_run, all, model }) => {
             download_models(dry_run, all, model).await?;
@@ -291,7 +295,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn launch_gui() -> Result<()> {
+fn launch_gui(toggle: bool) -> Result<()> {
     use std::process::Command;
 
     // Find the GUI binary - look next to current executable first
@@ -311,12 +315,21 @@ fn launch_gui() -> Result<()> {
         anyhow::bail!("yammer-app binary not found");
     }
 
-    println!("Launching Yammer GUI...");
+    // Build command with optional --toggle flag
+    let mut cmd = Command::new(&gui_binary);
+    if toggle {
+        cmd.arg("--toggle");
+    }
 
     // Spawn detached so CLI can exit
-    Command::new(&gui_binary)
-        .spawn()
+    cmd.spawn()
         .map_err(|e| anyhow::anyhow!("Failed to launch GUI: {}", e))?;
+
+    if toggle {
+        println!("Toggling dictation...");
+    } else {
+        println!("Launching Yammer GUI...");
+    }
 
     Ok(())
 }
