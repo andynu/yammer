@@ -53,6 +53,7 @@ pub struct PipelineConfig {
     pub use_llm_correction: bool,
     pub output_method: OutputMethod,
     pub vad_threshold: f64,
+    pub audio_device: Option<String>,
 }
 
 impl Default for PipelineConfig {
@@ -63,6 +64,7 @@ impl Default for PipelineConfig {
             use_llm_correction: false,
             output_method: OutputMethod::Type,
             vad_threshold: 0.01,
+            audio_device: None,
         }
     }
 }
@@ -236,9 +238,15 @@ impl DictationPipeline {
         self.send_state(PipelineState::Listening);
         info!("Starting audio capture...");
 
-        // Set up audio capture
-        let capture = AudioCapture::new()
-            .map_err(|e| format!("Failed to initialize audio: {}", e))?;
+        // Set up audio capture (use configured device or default)
+        let capture = if let Some(ref device_name) = self.config.audio_device {
+            info!("Using configured audio device: {}", device_name);
+            AudioCapture::with_device(device_name)
+                .map_err(|e| format!("Failed to initialize audio device '{}': {}", device_name, e))?
+        } else {
+            AudioCapture::new()
+                .map_err(|e| format!("Failed to initialize audio: {}", e))?
+        };
 
         let input_sample_rate = capture.sample_rate();
         info!("Audio capture initialized: {} Hz", input_sample_rate);

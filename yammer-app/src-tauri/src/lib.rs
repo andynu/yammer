@@ -61,6 +61,7 @@ async fn initialize_pipeline(
         use_llm_correction: use_correction && app_config.llm_enabled(),
         output_method,
         vad_threshold: app_config.audio.vad_threshold,
+        audio_device: app_config.audio.device.clone(),
     };
 
     let mut pipeline = DictationPipeline::new(pipeline_config, state.event_tx.clone());

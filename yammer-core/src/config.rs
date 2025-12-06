@@ -55,6 +55,10 @@ impl Default for ModelsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AudioConfig {
+    /// Input device name (use "default" or omit for system default)
+    /// Run `yammer list-devices` to see available devices
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
     /// RMS threshold for speech detection
     pub vad_threshold: f64,
     /// Number of consecutive frames to confirm speech start
@@ -66,6 +70,7 @@ pub struct AudioConfig {
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
+            device: None,
             vad_threshold: 0.01,
             vad_speech_frames: 3,
             vad_silence_frames: 15,
