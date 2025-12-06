@@ -368,12 +368,17 @@ pub fn run() {
 
             // Show the existing window
             if let Some(window) = app.get_webview_window("main") {
-                let was_visible = window.is_visible().unwrap_or(true);
+                // Default to false so we try to show if visibility check fails
+                let was_visible = window.is_visible().unwrap_or(false);
+                let was_minimized = window.is_minimized().unwrap_or(false);
                 let is_toggle = argv.iter().any(|arg| arg == "--toggle");
 
-                if !was_visible {
-                    info!("Window was hidden, showing it");
+                if !was_visible || was_minimized {
+                    info!("Window was hidden/minimized, bringing forward");
+                    // Multiple calls to ensure window appears on all window managers
+                    let _ = window.unminimize();
                     let _ = window.show();
+                    let _ = window.set_always_on_top(true);
                 }
 
                 // Only steal focus if NOT using --toggle (dictation should not steal focus)
@@ -385,7 +390,7 @@ pub fn run() {
                 if is_toggle {
                     info!("Toggle flag detected, starting dictation");
                     // Emit dictation-start since window was likely hidden
-                    if !was_visible {
+                    if !was_visible || was_minimized {
                         if let Err(e) = app.emit("dictation-start", ()) {
                             error!("Failed to emit dictation-start: {}", e);
                         }
@@ -413,15 +418,23 @@ pub fn run() {
                     if shortcut == &dictate_shortcut {
                         debug!("Dictation hotkey pressed (Super+H)");
 
-                        // Check if window was hidden/minimized
+                        // Check if window was hidden/minimized and bring it forward
                         let was_hidden = if let Some(window) = app.get_webview_window("main") {
-                            let was_visible = window.is_visible().unwrap_or(true);
-                            if !was_visible {
-                                debug!("Window was hidden, showing without focus");
-                                // show() brings the window to view without focusing it
+                            // Default to false so we try to show if visibility check fails
+                            let was_visible = window.is_visible().unwrap_or(false);
+                            let was_minimized = window.is_minimized().unwrap_or(false);
+
+                            if !was_visible || was_minimized {
+                                debug!("Window was hidden/minimized, bringing forward");
+                                // Multiple calls to ensure window appears on all window managers:
+                                // 1. Unminimize (in case it was minimized)
+                                let _ = window.unminimize();
+                                // 2. Show (in case it was hidden)
                                 if let Err(e) = window.show() {
                                     error!("Failed to show window: {}", e);
                                 }
+                                // 3. Re-assert always on top to bring to foreground
+                                let _ = window.set_always_on_top(true);
                                 true
                             } else {
                                 false
@@ -512,10 +525,15 @@ pub fn run() {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
                             // Toggle visibility: if visible, hide; if hidden, show
-                            if window.is_visible().unwrap_or(false) {
+                            let is_visible = window.is_visible().unwrap_or(false);
+                            let is_minimized = window.is_minimized().unwrap_or(false);
+                            if is_visible && !is_minimized {
                                 let _ = window.hide();
                             } else {
+                                // Robust show: unminimize, show, and ensure on top
+                                let _ = window.unminimize();
                                 let _ = window.show();
+                                let _ = window.set_always_on_top(true);
                                 let _ = window.set_focus();
                             }
                         }
