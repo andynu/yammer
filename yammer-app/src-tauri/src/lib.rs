@@ -615,6 +615,20 @@ pub fn run() {
                 }
             });
 
+            // Handle --toggle on first launch (not just second instance)
+            if std::env::args().any(|arg| arg == "--toggle") {
+                info!("First launch with --toggle flag, will start dictation after init");
+                let app_handle = app.handle().clone();
+                // Delay to allow frontend to initialize and listen for events
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    info!("Emitting dictation-start for first-launch --toggle");
+                    if let Err(e) = app_handle.emit("dictation-start", ()) {
+                        error!("Failed to emit dictation-start: {}", e);
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
