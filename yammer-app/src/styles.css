@@ -25,18 +25,18 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  cursor: grab;
 }
 
-.app-container:active {
-  cursor: grabbing;
-}
-
-/* Status row with indicator */
+/* Status row with indicator - drag region for window movement */
 .status-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  cursor: grab;
+}
+
+.status-row:active {
+  cursor: grabbing;
 }
 
 /* Record button - clear toggle */

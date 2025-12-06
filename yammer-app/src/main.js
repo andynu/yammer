@@ -119,20 +119,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Enable window dragging on the container
-  appContainer.addEventListener('mousedown', (e) => {
-    // Only drag on left mouse button - must be sync, not async
-    // Don't drag if clicking on interactive elements
-    if (e.button === 0 &&
-        !e.target.closest('.close-btn') &&
-        !e.target.closest('.transcript-area') &&
-        !e.target.closest('.record-btn') &&
-        !e.target.closest('.waveform-container')) {
-      e.preventDefault();
-      appWindow.startDragging();
-    }
-  });
-
   // Listen for window move events from Tauri (fires during/after drag)
   let saveTimeout = null;
   appWindow.onMoved(({ payload: position }) => {
@@ -146,12 +132,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Close button handler - minimize to tray instead of quit
   const closeBtn = document.querySelector('.close-btn');
-  closeBtn.addEventListener('mousedown', async (e) => {
+  closeBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
     e.preventDefault();
     console.log('Close button clicked - minimizing to tray');
     await saveCurrentPosition();
     await appWindow.hide();
+  });
+  // Prevent drag on mousedown too
+  closeBtn.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
   });
 
   // Escape key to minimize to tray
