@@ -4,7 +4,11 @@ mod pipeline;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{
+    AppHandle, Emitter, Manager, State,
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
@@ -428,6 +432,61 @@ pub fn run() {
                     );
                 }
             }
+
+            // Create system tray
+            let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+            let toggle_item = MenuItem::with_id(app, "toggle", "Toggle Recording", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_item, &toggle_item, &quit_item])?;
+
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .show_menu_on_left_click(false)  // Left-click shows window, right-click shows menu
+                .tooltip("Yammer - Dictation App")
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        info!("Tray: Show Window clicked");
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "toggle" => {
+                        info!("Tray: Toggle Recording clicked");
+                        if let Err(e) = app.emit("dictation-toggle", ()) {
+                            error!("Failed to emit dictation-toggle: {}", e);
+                        }
+                    }
+                    "quit" => {
+                        info!("Tray: Quit clicked");
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        debug!("Tray icon left-clicked");
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            // Toggle visibility: if visible, hide; if hidden, show
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
+
+            info!("System tray created");
 
             // Spawn task to forward pipeline events to frontend
             let app_handle = app.handle().clone();
