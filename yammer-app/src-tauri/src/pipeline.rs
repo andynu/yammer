@@ -294,57 +294,58 @@ impl DictationPipeline {
             }
         };
 
-        // VAD processor
+        // VAD processor (still useful for detecting speech patterns)
         let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
         let mut all_samples: Vec<f32> = Vec::new();
-        let mut speech_detected = false;
 
         // Process audio chunks in a blocking loop
         // Note: We use blocking_recv since we're in spawn_blocking
+        // For click-to-toggle mode: collect ALL audio, not just VAD-detected speech
         while let Some(chunk) = rx.blocking_recv() {
+            // Always collect samples while listening (for click-to-toggle mode)
+            all_samples.extend_from_slice(&chunk);
+
+            // Check for cancellation (user clicked stop)
             if self.is_cancelled() {
-                info!("Listening cancelled");
-                return Err("Cancelled".to_string());
+                info!("Listening stopped by user, {} samples collected", all_samples.len());
+
+                if all_samples.is_empty() {
+                    warn!("No audio recorded");
+                    return Err("No audio recorded".to_string());
+                }
+
+                // Process whatever we have
+                info!(
+                    "Processing {} samples ({:.2}s) at {} Hz",
+                    all_samples.len(),
+                    all_samples.len() as f32 / input_sample_rate as f32,
+                    input_sample_rate
+                );
+                return self.maybe_resample(all_samples, input_sample_rate);
             }
 
             // Calculate audio level for visualization
             let rms = Vad::calculate_rms(&chunk);
             self.send_audio_level(rms);
 
-            // Process through VAD
+            // Process through VAD (still useful for detecting natural speech end)
             let events = vad.process(&chunk);
 
             for event in events {
                 match event {
                     VadEvent::SpeechStart => {
                         debug!("Speech started");
-                        speech_detected = true;
                     }
                     VadEvent::Speaking => {
-                        // Accumulate samples during speech
-                        all_samples.extend_from_slice(&chunk);
+                        // Samples already collected above
                     }
-                    VadEvent::SpeechEnd { samples } => {
-                        debug!("Speech ended, {} samples collected", samples.len());
-                        all_samples.extend(samples);
-
-                        if all_samples.is_empty() {
-                            warn!("No speech detected");
-                            return Err("No speech detected".to_string());
-                        }
-
-                        info!(
-                            "Captured {} samples ({:.2}s) at {} Hz",
-                            all_samples.len(),
-                            all_samples.len() as f32 / input_sample_rate as f32,
-                            input_sample_rate
-                        );
-
-                        // Resample to Whisper format if needed
-                        return self.maybe_resample(all_samples, input_sample_rate);
+                    VadEvent::SpeechEnd { samples: _ } => {
+                        // In click-to-toggle mode, we don't auto-stop on speech end
+                        // User controls when to stop via the button
+                        debug!("VAD detected speech end (continuing recording)");
                     }
                     VadEvent::Silent => {
-                        // If we haven't started speaking yet, that's fine
+                        // Continue recording
                     }
                 }
             }
@@ -353,21 +354,28 @@ impl DictationPipeline {
             if all_samples.len() > input_sample_rate as usize * 30 {
                 warn!("Recording timeout (30s max)");
 
-                if all_samples.is_empty() {
-                    warn!("No speech detected (timeout)");
-                    return Err("No speech detected (timeout)".to_string());
-                }
+                info!(
+                    "Processing {} samples ({:.2}s) at {} Hz",
+                    all_samples.len(),
+                    all_samples.len() as f32 / input_sample_rate as f32,
+                    input_sample_rate
+                );
 
                 return self.maybe_resample(all_samples, input_sample_rate);
             }
         }
 
-        // Channel closed unexpectedly
-        if speech_detected && !all_samples.is_empty() {
+        // Channel closed - process whatever we have
+        if !all_samples.is_empty() {
+            info!(
+                "Audio capture ended, processing {} samples ({:.2}s)",
+                all_samples.len(),
+                all_samples.len() as f32 / input_sample_rate as f32
+            );
             self.maybe_resample(all_samples, input_sample_rate)
         } else {
-            error!("Audio capture ended unexpectedly");
-            Err("Audio capture ended unexpectedly".to_string())
+            warn!("Audio capture ended with no samples");
+            Err("No audio recorded".to_string())
         }
     }
 

@@ -191,7 +191,10 @@ async fn stop_dictation(state: State<'_, AppState>) -> Result<(), String> {
 
     let pipeline_guard = state.pipeline.lock().await;
     if let Some(ref pipeline) = *pipeline_guard {
+        info!("Signaling pipeline to stop and process audio");
         pipeline.cancel();
+    } else {
+        warn!("No pipeline to stop");
     }
 
     Ok(())
