@@ -19,6 +19,18 @@ use yammer_llm::Corrector;
 use yammer_output::{TextOutput, OutputMethod};
 use yammer_stt::Transcriber;
 
+/// Action to perform for config command
+enum ConfigAction {
+    /// Show overview of config status
+    Overview,
+    /// Show current configuration as TOML
+    Show,
+    /// Print path to config file
+    Path,
+    /// Initialize default config file
+    Init,
+}
+
 #[derive(Parser)]
 #[command(name = "yammer")]
 #[command(about = "Linux dictation app - local speech-to-text with LLM correction")]
@@ -231,7 +243,16 @@ async fn main() -> Result<()> {
             type_text_cmd(text, clipboard, delay).await?;
         }
         Some(Commands::Config { show, path, init }) => {
-            config_cmd(show, path, init)?;
+            let action = if path {
+                ConfigAction::Path
+            } else if init {
+                ConfigAction::Init
+            } else if show {
+                ConfigAction::Show
+            } else {
+                ConfigAction::Overview
+            };
+            config_cmd(action)?;
         }
         Some(Commands::Hashes {
             clear,
@@ -1115,49 +1136,41 @@ async fn type_text_cmd(text: String, clipboard: bool, delay: u64) -> Result<()> 
     Ok(())
 }
 
-fn config_cmd(show: bool, path: bool, init: bool) -> Result<()> {
+fn config_cmd(action: ConfigAction) -> Result<()> {
     let config_path = Config::default_path();
 
-    // If no flags, show overview
-    if !show && !path && !init {
-        println!("Configuration file: {:?}", config_path);
-        if config_path.exists() {
-            println!("Status: exists");
-            println!("\nUse --show to display contents");
-            println!("Use --path to print path only");
-        } else {
-            println!("Status: not found (using defaults)");
-            println!("\nUse --init to create default config");
+    match action {
+        ConfigAction::Overview => {
+            println!("Configuration file: {:?}", config_path);
+            if config_path.exists() {
+                println!("Status: exists");
+                println!("\nUse --show to display contents");
+                println!("Use --path to print path only");
+            } else {
+                println!("Status: not found (using defaults)");
+                println!("\nUse --init to create default config");
+            }
         }
-        return Ok(());
-    }
-
-    // --path: just print path
-    if path {
-        println!("{}", config_path.display());
-        return Ok(());
-    }
-
-    // --init: create default config if doesn't exist
-    if init {
-        if config_path.exists() {
-            println!("Config file already exists: {:?}", config_path);
-            println!("Remove it first if you want to reset to defaults.");
-        } else {
-            Config::ensure_default_exists()
-                .map_err(|e| anyhow::anyhow!("Failed to create config: {}", e))?;
-            println!("Created default config: {:?}", config_path);
+        ConfigAction::Path => {
+            println!("{}", config_path.display());
         }
-        return Ok(());
-    }
-
-    // --show: print current config as TOML
-    if show {
-        let config = Config::load();
-        let toml_str = config
-            .to_toml()
-            .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
-        println!("{}", toml_str);
+        ConfigAction::Init => {
+            if config_path.exists() {
+                println!("Config file already exists: {:?}", config_path);
+                println!("Remove it first if you want to reset to defaults.");
+            } else {
+                Config::ensure_default_exists()
+                    .map_err(|e| anyhow::anyhow!("Failed to create config: {}", e))?;
+                println!("Created default config: {:?}", config_path);
+            }
+        }
+        ConfigAction::Show => {
+            let config = Config::load();
+            let toml_str = config
+                .to_toml()
+                .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
+            println!("{}", toml_str);
+        }
     }
 
     Ok(())
