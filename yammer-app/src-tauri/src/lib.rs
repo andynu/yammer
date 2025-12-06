@@ -588,11 +588,15 @@ pub fn run() {
                             let _ = app_handle.emit("pipeline-state", state.as_str());
                         }
                         PipelineEvent::AudioLevel(level) => {
+                            // Amplify the RMS level for visualization
+                            // Typical speech RMS is 0.02-0.15, we want 0.3-0.9 for display
+                            let amplified = (level * 8.0).min(1.0);
+
                             // Convert to waveform samples (spread across 40 bars)
                             let samples: Vec<f32> = (0..40)
                                 .map(|i| {
                                     let phase = i as f32 * 0.15;
-                                    let variation = (phase.sin() * 0.3 + 0.7) * level;
+                                    let variation = (phase.sin() * 0.3 + 0.7) * amplified;
                                     variation.min(1.0)
                                 })
                                 .collect();
