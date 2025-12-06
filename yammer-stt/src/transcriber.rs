@@ -56,12 +56,78 @@ pub struct Transcript {
     pub segments: Vec<TranscriptSegment>,
 }
 
+/// Known Whisper hallucination patterns to filter out
+const HALLUCINATION_PATTERNS: &[&str] = &[
+    // Common hallucinations during silence
+    "[inaudible]",
+    "(inaudible)",
+    "[BLANK_AUDIO]",
+    "[MUSIC]",
+    "[Music]",
+    "[Applause]",
+    "[Laughter]",
+    // YouTube-style endings Whisper hallucinates
+    "Thank you for watching",
+    "Thanks for watching",
+    "Subscribe to my channel",
+    "Please subscribe",
+    "Like and subscribe",
+    // Short filler hallucinations
+    "Thank you.",
+    "Thanks.",
+    "Bye.",
+    "Bye-bye.",
+    "you",
+    "You",
+    // Foreign language hallucinations (common with English models)
+    "Sous-titres",
+    "sous-titres",
+    "Amara.org",
+    // Repeated phrases (exact matches)
+    "...",
+    "♪",
+];
+
+/// Check if text is likely a Whisper hallucination
+fn is_hallucination(text: &str) -> bool {
+    let trimmed = text.trim();
+
+    // Empty or whitespace-only
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    // Exact match with known patterns
+    for pattern in HALLUCINATION_PATTERNS {
+        if trimmed.eq_ignore_ascii_case(pattern) {
+            return true;
+        }
+    }
+
+    // Contains bracketed annotations like [inaudible], [music], etc.
+    if (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('(') && trimmed.ends_with(')'))
+    {
+        return true;
+    }
+
+    // Very short single-word responses that are likely hallucinations
+    // (but allow short real words that might be commands)
+    let word_count = trimmed.split_whitespace().count();
+    if word_count == 1 && trimmed.len() <= 3 {
+        return true;
+    }
+
+    false
+}
+
 impl Transcript {
-    /// Get the full text without timestamps
+    /// Get the full text without timestamps, filtering hallucinations
     pub fn text(&self) -> String {
         self.segments
             .iter()
             .map(|s| s.text.trim())
+            .filter(|s| !is_hallucination(s))
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -220,4 +286,63 @@ pub fn load_wav_16k(path: &Path) -> TranscribeResult<Vec<f32>> {
 
     debug!("Loaded {} mono samples", mono_samples.len());
     Ok(mono_samples)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hallucination_filter_known_patterns() {
+        // Known hallucination patterns should be filtered
+        assert!(is_hallucination("[inaudible]"));
+        assert!(is_hallucination("(inaudible)"));
+        assert!(is_hallucination("[BLANK_AUDIO]"));
+        assert!(is_hallucination("[Music]"));
+        assert!(is_hallucination("Thank you for watching"));
+        assert!(is_hallucination("THANK YOU FOR WATCHING")); // case insensitive
+        assert!(is_hallucination("Thanks."));
+        assert!(is_hallucination("Bye."));
+        assert!(is_hallucination("you"));
+    }
+
+    #[test]
+    fn test_hallucination_filter_bracketed() {
+        // Any bracketed text should be filtered
+        assert!(is_hallucination("[anything]"));
+        assert!(is_hallucination("(something)"));
+        assert!(is_hallucination("[random noise]"));
+    }
+
+    #[test]
+    fn test_hallucination_filter_short_words() {
+        // Very short single words (3 chars or less) are filtered
+        assert!(is_hallucination("ok"));
+        assert!(is_hallucination("um"));
+        assert!(is_hallucination("uh"));
+    }
+
+    #[test]
+    fn test_hallucination_filter_real_speech() {
+        // Real speech should NOT be filtered
+        assert!(!is_hallucination("Hello world"));
+        assert!(!is_hallucination("This is a test"));
+        assert!(!is_hallucination("Send email to Bob"));
+        assert!(!is_hallucination("open"));  // 4 chars, single word - not filtered
+        assert!(!is_hallucination("Hello")); // Real greeting
+    }
+
+    #[test]
+    fn test_transcript_text_filters_hallucinations() {
+        let transcript = Transcript {
+            segments: vec![
+                TranscriptSegment { start_ms: 0, end_ms: 100, text: "Hello".to_string() },
+                TranscriptSegment { start_ms: 100, end_ms: 200, text: "[inaudible]".to_string() },
+                TranscriptSegment { start_ms: 200, end_ms: 300, text: "world".to_string() },
+                TranscriptSegment { start_ms: 300, end_ms: 400, text: "Thank you for watching".to_string() },
+            ],
+        };
+
+        assert_eq!(transcript.text(), "Hello world");
+    }
 }
