@@ -222,10 +222,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Update status indicator
     statusIndicator.className = `status-indicator ${state.status}`;
 
-    // Update record button - shows recording state
-    if (state.isRunning) {
+    // Update record button - disabled until initialized, then shows recording state
+    if (!state.pipelineInitialized) {
+      recordButton.classList.add('disabled');
+      recordButton.classList.remove('recording');
+    } else if (state.isRunning) {
+      recordButton.classList.remove('disabled');
       recordButton.classList.add('recording');
     } else {
+      recordButton.classList.remove('disabled');
       recordButton.classList.remove('recording');
     }
 
@@ -238,7 +243,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       done: 'Done',
       error: 'Error'
     };
-    statusText.textContent = statusLabels[state.status] || 'Ready';
+    // Show "Loading..." during initialization
+    if (!state.pipelineInitialized && state.status === 'processing') {
+      statusText.textContent = 'Loading...';
+    } else {
+      statusText.textContent = statusLabels[state.status] || 'Ready';
+    }
 
     // Update transcript
     if (state.transcript) {
@@ -342,6 +352,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   let isToggling = false;
 
   async function toggleDictation() {
+    // Block if not initialized
+    if (!state.pipelineInitialized) {
+      console.log('Pipeline not initialized yet, ignoring toggle');
+      return;
+    }
+
     // Debounce: ignore toggles within 500ms of each other
     const now = Date.now();
     if (now - lastToggleTime < 500) {
@@ -361,19 +377,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.log('Dictation toggle triggered');
 
     try {
-      if (!state.pipelineInitialized) {
-        console.log('Pipeline not initialized, initializing first...');
-        try {
-          await initializePipeline();
-        } catch (e) {
-          console.error('Failed to initialize pipeline:', e);
-          state.status = 'error';
-          state.transcript = `Initialization failed: ${e}`;
-          updateUI();
-          return;
-        }
-      }
-
       // Toggle dictation via backend
       const nowRunning = await invoke('toggle_dictation');
       console.log('Dictation toggled, now running:', nowRunning);
@@ -489,14 +492,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load saved window position
   await loadWindowPosition();
 
-  // Auto-initialize pipeline on load
-  setTimeout(async () => {
-    try {
-      await initializePipeline();
-    } catch (e) {
-      console.error('Auto-initialization failed:', e);
-      state.transcript = `Ready. ${e.message || e}`;
-      updateUI();
-    }
-  }, 500);
+  // Auto-initialize pipeline immediately on load
+  console.log('Starting pipeline initialization...');
+  state.transcript = 'Loading models...';
+  state.status = 'processing';
+  updateUI();
+
+  try {
+    await initializePipeline();
+    state.status = 'idle';
+    updateUI();
+  } catch (e) {
+    console.error('Pipeline initialization failed:', e);
+    state.status = 'error';
+    state.transcript = `Init failed: ${e.message || e}`;
+    updateUI();
+  }
 });
