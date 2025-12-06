@@ -192,13 +192,15 @@ html, body {
 .transcript-area {
   flex: 1;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   overflow: hidden;
   cursor: pointer;
   border-radius: 4px;
   padding: 2px 4px;
   margin: -2px -4px;
   transition: background-color 0.2s ease;
+  max-height: 100px;
+  overflow-y: auto;
 }
 
 .transcript-area:hover {
@@ -209,9 +211,9 @@ html, body {
   font-size: 15px;
   line-height: 1.4;
   color: #e0e0e0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
   transition: color 0.3s ease, opacity 0.3s ease;
 }
 
