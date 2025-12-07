@@ -362,8 +362,9 @@ tauri::async_runtime::spawn(async move {
                 let _ = app_handle.emit("pipeline-state", state.as_str());
             }
             PipelineEvent::AudioLevel(level) => {
-                // Amplify for visualization
-                let amplified = (level * 8.0).min(1.0);
+                // Non-linear amplification: sqrt compresses dynamic range
+                // Boosts quiet sounds, tames loud ones
+                let amplified = (level * 20.0).sqrt().min(1.0);
 
                 // Convert to waveform samples
                 let samples: Vec<f32> = (0..40)
