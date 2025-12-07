@@ -487,7 +487,11 @@ impl DictationPipeline {
 
         // VAD processor (still useful for detecting speech patterns)
         let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
-        let mut all_samples: Vec<f32> = Vec::new();
+
+        // Pre-allocate buffer for 30 seconds of audio (max recording duration)
+        // This avoids repeated reallocations during recording
+        let max_samples = input_sample_rate as usize * 30;
+        let mut all_samples: Vec<f32> = Vec::with_capacity(max_samples);
 
         // Process audio chunks in a blocking loop
         // Note: We use blocking_recv since we're in spawn_blocking
