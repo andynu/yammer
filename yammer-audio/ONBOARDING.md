@@ -58,8 +58,8 @@ Key concepts you'll encounter:
 | **Frame** | One sample from each channel (2 samples for stereo) |
 
 Common sample rates:
-- 44100 Hz: CD quality, common default
 - 48000 Hz: Video/professional audio standard
+- 44100 Hz: CD quality, common default
 - 16000 Hz: Speech recognition standard (Whisper uses this)
 
 ### Voice Activity Detection (VAD)
