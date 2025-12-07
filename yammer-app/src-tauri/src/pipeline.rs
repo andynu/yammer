@@ -291,6 +291,67 @@ impl DictationPipeline {
 
     /// Run the complete dictation pipeline (blocking)
     /// This should be called from spawn_blocking
+    ///
+    /// ## Control Flow
+    ///
+    /// ```text
+    ///                          ┌──────────────┐
+    ///                          │ run_blocking │
+    ///                          └──────┬───────┘
+    ///                                 │
+    ///                     ┌───────────┴───────────┐
+    ///                     │    is_initialized?    │
+    ///                     └───────────┬───────────┘
+    ///                            no/  │ \yes
+    ///                     ┌─────────┐ │  ↓
+    ///                     │  Error  │ │ listen_blocking()
+    ///                     └─────────┘ │ ──────────────────
+    ///                                 │    │
+    ///                           ┌─────┴────┴─────┐
+    ///                           │ is_discarded?  │←────────────────┐
+    ///                           └───────┬────────┘                 │
+    ///                              yes/  \no                       │
+    ///                    ┌───────────┐    ↓                        │
+    ///                    │ Discarded │  transcribe_blocking()      │
+    ///                    └───────────┘  ─────────────────────      │
+    ///                                     │                        │
+    ///                               ┌─────┴─────┐                  │
+    ///                               │is_discard?│←─────────────────┤
+    ///                               └─────┬─────┘                  │
+    ///                              yes/    \no                     │
+    ///                    ┌───────────┐     ↓                       │
+    ///                    │ Discarded │  correct_blocking()         │
+    ///                    └───────────┘  (if LLM enabled)           │
+    ///                                     │                        │
+    ///                          ┌──────────┴──────────┐             │
+    ///                          │ correction result?  │             │
+    ///                          └──────────┬──────────┘             │
+    ///                         /    │      │     \                  │
+    ///                      Ok   Cancel  Error  is_discarded?───yes─┘
+    ///                       │      │      │         no
+    ///                       ↓      ↓      ↓          ↓
+    ///                 corrected  text   text    ┌───────────┐
+    ///                       │      │      │     │ Discarded │
+    ///                       └──────┴──────┘     └───────────┘
+    ///                             │
+    ///                     output_blocking()
+    ///                     ─────────────────
+    ///                             │
+    ///                    ┌────────┴────────┐
+    ///                    │ output result?  │
+    ///                    └────────┬────────┘
+    ///                        Ok/  │ \Error
+    ///                  ┌────────┐ │  ┌───────┐
+    ///                  │  Done  │ │  │ Error │
+    ///                  └────────┘ │  └───────┘
+    ///                             ↓
+    ///                     Ok(text) returned
+    /// ```
+    ///
+    /// Key behaviors:
+    /// - **cancel flag**: Stops listening phase only; transcription/correction proceed
+    /// - **discard flag**: Aborts at any stage, no text output
+    /// - **correction errors**: Fall back to uncorrected text (graceful degradation)
     pub fn run_blocking(&self) -> Result<String, String> {
         info!("Starting dictation pipeline...");
         self.reset_cancel();
