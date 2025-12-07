@@ -594,3 +594,157 @@ const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<DictationPipeline>();
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pipeline_state_as_str() {
+        assert_eq!(PipelineState::Idle.as_str(), "idle");
+        assert_eq!(PipelineState::Listening.as_str(), "listening");
+        assert_eq!(PipelineState::Processing.as_str(), "processing");
+        assert_eq!(PipelineState::Correcting.as_str(), "correcting");
+        assert_eq!(PipelineState::Done.as_str(), "done");
+        assert_eq!(PipelineState::Error.as_str(), "error");
+        assert_eq!(PipelineState::Discarded.as_str(), "discarded");
+    }
+
+    #[test]
+    fn test_pipeline_config_default() {
+        let config = PipelineConfig::default();
+        assert!(config.whisper_model_path.as_os_str().is_empty());
+        assert!(config.llm_model_path.is_none());
+        assert!(!config.use_llm_correction);
+        assert_eq!(config.output_method, OutputMethod::Type);
+        assert!((config.vad_threshold - 0.01).abs() < f64::EPSILON);
+        assert!(config.audio_device.is_none());
+    }
+
+    #[test]
+    fn test_is_special_token_only() {
+        // These should be recognized as special tokens
+        assert!(DictationPipeline::is_special_token_only("[BLANK_AUDIO]"));
+        assert!(DictationPipeline::is_special_token_only("[MUSIC]"));
+        assert!(DictationPipeline::is_special_token_only("[INAUDIBLE]"));
+        assert!(DictationPipeline::is_special_token_only("(music)"));
+        assert!(DictationPipeline::is_special_token_only("(inaudible)"));
+        assert!(DictationPipeline::is_special_token_only("(silence)"));
+        assert!(DictationPipeline::is_special_token_only("[SILENCE]"));
+
+        // Case insensitive
+        assert!(DictationPipeline::is_special_token_only("[blank_audio]"));
+        assert!(DictationPipeline::is_special_token_only("[Blank_Audio]"));
+        assert!(DictationPipeline::is_special_token_only("(MUSIC)"));
+
+        // With whitespace
+        assert!(DictationPipeline::is_special_token_only("  [BLANK_AUDIO]  "));
+        assert!(DictationPipeline::is_special_token_only("\n[MUSIC]\n"));
+
+        // These should NOT be special tokens
+        assert!(!DictationPipeline::is_special_token_only("Hello world"));
+        assert!(!DictationPipeline::is_special_token_only(""));
+        assert!(!DictationPipeline::is_special_token_only("The [MUSIC] was great"));
+        assert!(!DictationPipeline::is_special_token_only("[UNKNOWN]"));
+    }
+
+    #[test]
+    fn test_pipeline_not_initialized() {
+        let (tx, _rx) = mpsc::channel(10);
+        let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
+
+        assert!(!pipeline.is_initialized());
+    }
+
+    #[test]
+    fn test_cancel_handle() {
+        let (tx, _rx) = mpsc::channel(10);
+        let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
+
+        let cancel_handle = pipeline.get_cancel_handle();
+
+        // Initially not cancelled
+        assert!(!pipeline.is_cancelled());
+
+        // Set cancel via handle
+        cancel_handle.store(true, Ordering::SeqCst);
+        assert!(pipeline.is_cancelled());
+
+        // Reset
+        pipeline.reset_cancel();
+        assert!(!pipeline.is_cancelled());
+    }
+
+    #[test]
+    fn test_discard_handle() {
+        let (tx, _rx) = mpsc::channel(10);
+        let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
+
+        let discard_handle = pipeline.get_discard_handle();
+
+        // Initially not discarded
+        assert!(!pipeline.is_discarded());
+
+        // Set discard via handle
+        discard_handle.store(true, Ordering::SeqCst);
+        assert!(pipeline.is_discarded());
+
+        // Reset (reset_cancel also resets discard)
+        pipeline.reset_cancel();
+        assert!(!pipeline.is_discarded());
+    }
+
+    #[test]
+    fn test_pipeline_events_sent() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
+
+        // Send state
+        pipeline.send_state(PipelineState::Listening);
+
+        // Verify event received
+        let event = rx.try_recv().expect("Should receive event");
+        match event {
+            PipelineEvent::StateChanged(state) => {
+                assert_eq!(state, PipelineState::Listening);
+            }
+            _ => panic!("Expected StateChanged event"),
+        }
+    }
+
+    #[test]
+    fn test_pipeline_run_without_initialization() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
+
+        // Running without initialization should fail
+        let result = pipeline.run_blocking();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Pipeline not initialized");
+
+        // Should have sent error event
+        let mut found_error_state = false;
+        while let Ok(event) = rx.try_recv() {
+            if let PipelineEvent::StateChanged(PipelineState::Error) = event {
+                found_error_state = true;
+            }
+        }
+        assert!(found_error_state);
+    }
+
+    #[test]
+    fn test_pipeline_initialize_missing_model() {
+        let (tx, _rx) = mpsc::channel(10);
+        let mut pipeline = DictationPipeline::new(
+            PipelineConfig {
+                whisper_model_path: "/nonexistent/model.bin".into(),
+                ..Default::default()
+            },
+            tx,
+        );
+
+        let result = pipeline.initialize();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+}
