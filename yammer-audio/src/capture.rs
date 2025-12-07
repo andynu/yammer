@@ -349,6 +349,7 @@ impl AudioCapture {
         let samples_per_chunk = (self.config.sample_rate.0 as f32 * chunk_ms as f32 / 1000.0) as usize;
         let (tx, rx) = mpsc::channel::<Vec<f32>>(100);
 
+        // Shared state for callbacks - use Arc to share across closure and CaptureHandle
         let is_running = Arc::new(AtomicBool::new(true));
         let channels = self.config.channels;
 
@@ -359,14 +360,20 @@ impl AudioCapture {
             .default_input_config()
             .map_err(|e| AudioError::Device(e.to_string()))?;
 
-        // Buffer to accumulate samples
+        // Buffer to accumulate samples (shared between callback and chunking logic)
         let buffer = Arc::new(std::sync::Mutex::new(Vec::with_capacity(samples_per_chunk * 2)));
-        let buffer_clone = buffer.clone();
-        let tx_clone = tx.clone();
-        let is_running_clone = is_running.clone();
 
-        let callback = move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            if !is_running_clone.load(Ordering::SeqCst) {
+        // Clone references for F32 callback (I16 branch will use originals via move)
+        let buffer_f32 = buffer.clone();
+        let tx_f32 = tx.clone();
+        let is_running_f32 = is_running.clone();
+
+        // Clone for CaptureHandle - shares the same underlying AtomicBool
+        let is_running_handle = is_running.clone();
+
+        // F32 callback - uses _f32 suffixed clones
+        let callback_f32 = move |data: &[f32], _: &cpal::InputCallbackInfo| {
+            if !is_running_f32.load(Ordering::SeqCst) {
                 return;
             }
 
@@ -382,13 +389,13 @@ impl AudioCapture {
                     .collect()
             };
 
-            let mut buf = buffer_clone.lock().unwrap();
+            let mut buf = buffer_f32.lock().unwrap();
             buf.extend(mono);
 
             // Send chunks when we have enough samples
             while buf.len() >= samples_per_chunk {
                 let chunk: Vec<f32> = buf.drain(..samples_per_chunk).collect();
-                if let Err(e) = tx_clone.try_send(chunk) {
+                if let Err(e) = tx_f32.try_send(chunk) {
                     warn!("Failed to send audio chunk: {}", e);
                 }
             }
@@ -398,13 +405,14 @@ impl AudioCapture {
             SampleFormat::F32 => {
                 self.device.build_input_stream(
                     &self.config,
-                    callback,
+                    callback_f32,
                     err_fn,
                     None,
                 ).map_err(|e| AudioError::Stream(e.to_string()))?
             }
             SampleFormat::I16 => {
-                let callback = move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                // I16 callback - moves the original buffer/tx/is_running (not used by F32 branch)
+                let callback_i16 = move |data: &[i16], _: &cpal::InputCallbackInfo| {
                     if !is_running.load(Ordering::SeqCst) {
                         return;
                     }
@@ -433,7 +441,7 @@ impl AudioCapture {
 
                 self.device.build_input_stream(
                     &self.config,
-                    callback,
+                    callback_i16,
                     err_fn,
                     None,
                 ).map_err(|e| AudioError::Stream(e.to_string()))?
@@ -444,11 +452,14 @@ impl AudioCapture {
         stream.play().map_err(|e| AudioError::Stream(e.to_string()))?;
         info!("Continuous capture started");
 
-        let is_running_for_handle = Arc::new(AtomicBool::new(true));
+        // Use is_running_handle which shares the same underlying AtomicBool as:
+        // - is_running_f32 (used by F32 callback)
+        // - is_running (moved into I16 callback)
+        // Setting this flag to false will stop whichever callback is active.
         Ok((
             CaptureHandle {
                 _stream: stream,
-                is_running: is_running_for_handle,
+                is_running: is_running_handle,
             },
             rx,
         ))
