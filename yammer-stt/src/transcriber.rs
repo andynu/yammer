@@ -3,7 +3,7 @@
 use std::path::Path;
 use thiserror::Error;
 use tracing::{debug, info};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{FullParams, SamplingStrategy, SegmentCallbackData, WhisperContext, WhisperContextParameters};
 
 /// Target sample rate for Whisper
 pub const WHISPER_SAMPLE_RATE: u32 = 16000;
@@ -219,6 +219,112 @@ impl Transcriber {
                 .map_err(|e| TranscribeError::Transcription(e.to_string()))?;
 
             let end = state.full_get_segment_t1(i)
+                .map_err(|e| TranscribeError::Transcription(e.to_string()))?;
+
+            // Convert from centiseconds to milliseconds
+            segments.push(TranscriptSegment {
+                start_ms: start as i64 * 10,
+                end_ms: end as i64 * 10,
+                text,
+            });
+        }
+
+        Ok(Transcript { segments })
+    }
+
+    /// Transcribe with streaming segment callbacks
+    ///
+    /// The callback is invoked for each segment as it's transcribed, allowing
+    /// the caller to display partial results. The callback receives the
+    /// cumulative text so far (all segments joined).
+    ///
+    /// Returns the final complete transcript.
+    pub fn transcribe_streaming<F>(
+        &self,
+        samples: &[f32],
+        mut on_segment: F,
+    ) -> TranscribeResult<Transcript>
+    where
+        F: FnMut(&str) + Send + 'static,
+    {
+        debug!(
+            "Transcribing {} samples ({:.2}s) with streaming",
+            samples.len(),
+            samples.len() as f32 / WHISPER_SAMPLE_RATE as f32
+        );
+
+        // Pad short audio with silence to meet Whisper's minimum requirement
+        let samples = if samples.len() < WHISPER_MIN_SAMPLES {
+            debug!(
+                "Padding audio from {} to {} samples",
+                samples.len(),
+                WHISPER_MIN_SAMPLES
+            );
+            let mut padded = samples.to_vec();
+            padded.resize(WHISPER_MIN_SAMPLES, 0.0);
+            std::borrow::Cow::Owned(padded)
+        } else {
+            std::borrow::Cow::Borrowed(samples)
+        };
+
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+
+        // Configure parameters for better results
+        params.set_language(Some("en"));
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+
+        // Accumulate segments as they arrive
+        let segments_accumulator = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let segments_for_callback = segments_accumulator.clone();
+
+        // Set up segment callback - fires as each segment is transcribed
+        params.set_segment_callback_safe(move |segment_data: SegmentCallbackData| {
+            let trimmed = segment_data.text.trim();
+
+            // Skip empty or hallucination segments
+            if !trimmed.is_empty() && !is_hallucination(trimmed) {
+                let mut segments = segments_for_callback.lock().unwrap();
+                segments.push(trimmed.to_string());
+
+                // Build cumulative text and invoke callback
+                let cumulative = segments.join(" ");
+                on_segment(&cumulative);
+            }
+        });
+
+        // Create state for this transcription
+        let mut state = self
+            .ctx
+            .create_state()
+            .map_err(|e| TranscribeError::Transcription(e.to_string()))?;
+
+        // Run transcription (callbacks fire during this)
+        state
+            .full(params, &samples)
+            .map_err(|e| TranscribeError::Transcription(e.to_string()))?;
+
+        // Extract final segments for the Transcript struct
+        let num_segments = state
+            .full_n_segments()
+            .map_err(|e| TranscribeError::Transcription(e.to_string()))?;
+
+        debug!("Got {} segments", num_segments);
+
+        let mut segments = Vec::new();
+        for i in 0..num_segments {
+            let text = state
+                .full_get_segment_text(i)
+                .map_err(|e| TranscribeError::Transcription(e.to_string()))?;
+
+            let start = state
+                .full_get_segment_t0(i)
+                .map_err(|e| TranscribeError::Transcription(e.to_string()))?;
+
+            let end = state
+                .full_get_segment_t1(i)
                 .map_err(|e| TranscribeError::Transcription(e.to_string()))?;
 
             // Convert from centiseconds to milliseconds

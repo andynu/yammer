@@ -614,7 +614,18 @@ impl DictationPipeline {
 
         let start = Instant::now();
 
-        let transcript = match transcriber.transcribe(samples) {
+        // Clone event sender for the streaming callback
+        let event_tx = self.event_tx.clone();
+
+        // Use streaming transcription to show partial results
+        let transcript = match transcriber.transcribe_streaming(samples, move |partial_text| {
+            // Send each segment as a partial transcript
+            debug!("Partial transcript: \"{}\"", partial_text);
+            let _ = event_tx.try_send(PipelineEvent::Transcript {
+                text: partial_text.to_string(),
+                is_partial: true,
+            });
+        }) {
             Ok(t) => t,
             Err(e) => {
                 let err = format!("Transcription failed: {}", e);
@@ -632,7 +643,7 @@ impl DictationPipeline {
             text
         );
 
-        // Send transcript (partial if LLM correction is pending)
+        // Send final transcript (partial if LLM correction is pending)
         self.send_transcript(text.clone(), self.corrector.is_some());
 
         Ok(text)
