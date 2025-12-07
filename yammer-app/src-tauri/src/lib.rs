@@ -121,21 +121,32 @@ async fn start_dictation(
 ) -> Result<(), String> {
     info!("Start dictation command received");
 
-    // Check if already running
+    // Combined lock acquisition: check/set is_running + verify pipeline + get handles
+    // This reduces 4 separate lock cycles to 2 (is_running + pipeline group)
     {
-        let is_running = state.is_running.lock().await;
+        // First: atomically check and set is_running
+        let mut is_running = state.is_running.lock().await;
         if *is_running {
             warn!("Dictation already in progress");
             return Err("Dictation already in progress".to_string());
         }
-    }
 
-    // Verify pipeline is initialized
-    {
+        // Verify pipeline is initialized and get handles (single pipeline lock)
         let pipeline_guard = state.pipeline.lock().await;
         match pipeline_guard.as_ref() {
             Some(p) if p.is_initialized() => {
                 info!("Pipeline is initialized, proceeding with dictation");
+
+                // Get cancel/discard handles while we have pipeline lock
+                let cancel_handle = p.get_cancel_handle();
+                let discard_handle = p.get_discard_handle();
+
+                // Update handle state (brief nested locks)
+                *state.cancel_handle.lock().await = Some(cancel_handle);
+                *state.discard_handle.lock().await = Some(discard_handle);
+
+                // Mark as running only after successful setup
+                *is_running = true;
             }
             Some(_) => {
                 error!("Pipeline exists but is not initialized (models not loaded)");
@@ -145,26 +156,6 @@ async fn start_dictation(
                 error!("Pipeline not created yet");
                 return Err("Pipeline not initialized. Call initialize_pipeline first.".to_string());
             }
-        }
-    }
-
-    // Mark as running and get cancel handle
-    {
-        let mut is_running = state.is_running.lock().await;
-        *is_running = true;
-    }
-
-    // Get cancel and discard handles from pipeline (while we have the lock briefly)
-    {
-        let pipeline_guard = state.pipeline.lock().await;
-        if let Some(ref pipeline) = *pipeline_guard {
-            let cancel_handle = pipeline.get_cancel_handle();
-            let mut handle_guard = state.cancel_handle.lock().await;
-            *handle_guard = Some(cancel_handle);
-
-            let discard_handle = pipeline.get_discard_handle();
-            let mut discard_guard = state.discard_handle.lock().await;
-            *discard_guard = Some(discard_handle);
         }
     }
 
@@ -188,30 +179,21 @@ async fn start_dictation(
             }
         };
 
-        // Mark as no longer running and clear handles
-        {
-            let rt = tokio::runtime::Handle::current();
-            let mut is_running = rt.block_on(is_running_state.lock());
-            *is_running = false;
-        }
-        {
-            let rt = tokio::runtime::Handle::current();
-            let mut cancel_handle = rt.block_on(cancel_handle_state.lock());
-            *cancel_handle = None;
-        }
-        {
-            let rt = tokio::runtime::Handle::current();
-            let mut discard_handle = rt.block_on(discard_handle_state.lock());
-            *discard_handle = None;
-        }
+        // Mark as no longer running and clear handles (combined cleanup)
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async {
+            *is_running_state.lock().await = false;
+            *cancel_handle_state.lock().await = None;
+            *discard_handle_state.lock().await = None;
+        });
 
         match result {
             Ok(text) => {
                 info!("Dictation completed successfully: \"{}\"", text);
                 // Store for "Copy Last" feature
-                let rt = tokio::runtime::Handle::current();
-                let mut last = rt.block_on(last_transcription_state.lock());
-                *last = Some(text);
+                rt.block_on(async {
+                    *last_transcription_state.lock().await = Some(text);
+                });
             }
             Err(ref e) => {
                 error!("Dictation failed: {}", e);
