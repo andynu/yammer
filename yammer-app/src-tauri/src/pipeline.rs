@@ -583,6 +583,14 @@ impl DictationPipeline {
     }
 }
 
-// Make the pipeline thread-safe for sharing between threads
-unsafe impl Send for DictationPipeline {}
-unsafe impl Sync for DictationPipeline {}
+// Compile-time assertion that DictationPipeline is Send + Sync.
+// All fields implement these traits:
+// - PipelineConfig: Contains PathBuf, Option<PathBuf>, bool, OutputMethod, f64, Option<String> (all Send+Sync)
+// - Arc<AtomicBool>: Send+Sync
+// - Option<Arc<Transcriber>>: WhisperContext implements Send+Sync (verified in whisper-rs 0.14.4)
+// - Option<Arc<Corrector>>: LlamaModel implements Send+Sync (verified in llama_cpp 0.3.2)
+// - tokio::sync::mpsc::Sender: Send+Sync
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<DictationPipeline>();
+};
