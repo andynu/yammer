@@ -38,6 +38,8 @@ pub enum OutputMethod {
 /// Text output handler for injecting dictated text
 pub struct TextOutput {
     method: OutputMethod,
+    /// Delay between keystrokes in milliseconds (for Type method)
+    typing_delay_ms: u32,
 }
 
 impl Default for TextOutput {
@@ -51,12 +53,24 @@ impl TextOutput {
     pub fn new() -> Self {
         Self {
             method: OutputMethod::Type,
+            typing_delay_ms: 0,
         }
     }
 
     /// Create a text output handler with specified method
     pub fn with_method(method: OutputMethod) -> Self {
-        Self { method }
+        Self {
+            method,
+            typing_delay_ms: 0,
+        }
+    }
+
+    /// Create a text output handler with method and typing delay
+    pub fn with_options(method: OutputMethod, typing_delay_ms: u32) -> Self {
+        Self {
+            method,
+            typing_delay_ms,
+        }
     }
 
     /// Check if xdotool is available
@@ -85,10 +99,15 @@ impl TextOutput {
     /// The `--clearmodifiers` flag releases any held keys (like Super from hotkey)
     /// before typing to prevent modifier interference.
     fn type_text(&self, text: &str) -> OutputResult<()> {
-        info!("Typing {} characters via xdotool", text.len());
+        info!(
+            "Typing {} characters via xdotool (delay={}ms)",
+            text.len(),
+            self.typing_delay_ms
+        );
 
+        let delay_str = self.typing_delay_ms.to_string();
         let status = Command::new("xdotool")
-            .args(["type", "--clearmodifiers", "--delay", "12", "--", text])
+            .args(["type", "--clearmodifiers", "--delay", &delay_str, "--", text])
             .status()?;
 
         if status.success() {
@@ -209,9 +228,26 @@ mod tests {
     fn test_text_output_with_method() {
         let output = TextOutput::with_method(OutputMethod::Type);
         assert_eq!(output.method, OutputMethod::Type);
+        assert_eq!(output.typing_delay_ms, 0);
 
         let output = TextOutput::with_method(OutputMethod::Clipboard);
         assert_eq!(output.method, OutputMethod::Clipboard);
+        assert_eq!(output.typing_delay_ms, 0);
+    }
+
+    #[test]
+    fn test_text_output_with_options() {
+        let output = TextOutput::with_options(OutputMethod::Type, 50);
+        assert_eq!(output.method, OutputMethod::Type);
+        assert_eq!(output.typing_delay_ms, 50);
+
+        let output = TextOutput::with_options(OutputMethod::Clipboard, 100);
+        assert_eq!(output.method, OutputMethod::Clipboard);
+        assert_eq!(output.typing_delay_ms, 100);
+
+        // Zero delay should be valid
+        let output = TextOutput::with_options(OutputMethod::Type, 0);
+        assert_eq!(output.typing_delay_ms, 0);
     }
 
     #[test]

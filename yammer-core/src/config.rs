@@ -84,12 +84,17 @@ impl Default for AudioConfig {
 pub struct OutputConfig {
     /// Output method: "type" for xdotool type, "clipboard" for clipboard paste
     pub method: String,
+    /// Delay between keystrokes in milliseconds (for "type" method)
+    /// Lower values = faster typing, higher values = more compatible with slow apps
+    /// Default is 0 (xdotool's default is 12ms; 0 means no delay)
+    pub typing_delay_ms: u32,
 }
 
 impl Default for OutputConfig {
     fn default() -> Self {
         Self {
             method: "type".to_string(),
+            typing_delay_ms: 0,
         }
     }
 }

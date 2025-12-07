@@ -79,6 +79,7 @@ async fn initialize_pipeline(
         _ => OutputMethod::Type,
     };
     info!("Output method: {:?}", output_method);
+    info!("Typing delay: {}ms", app_config.output.typing_delay_ms);
 
     // Audio device
     if let Some(ref device) = app_config.audio.device {
@@ -92,6 +93,7 @@ async fn initialize_pipeline(
         llm_model_path: llm_path,
         use_llm_correction: use_correction && app_config.llm_enabled(),
         output_method,
+        typing_delay_ms: app_config.output.typing_delay_ms,
         vad_threshold: app_config.audio.vad_threshold,
         audio_device: app_config.audio.device.clone(),
     };

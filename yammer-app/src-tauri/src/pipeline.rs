@@ -54,6 +54,8 @@ pub struct PipelineConfig {
     pub llm_model_path: Option<PathBuf>,
     pub use_llm_correction: bool,
     pub output_method: OutputMethod,
+    /// Delay between keystrokes in milliseconds (for Type output method)
+    pub typing_delay_ms: u32,
     pub vad_threshold: f64,
     pub audio_device: Option<String>,
 }
@@ -65,6 +67,7 @@ impl Default for PipelineConfig {
             llm_model_path: None,
             use_llm_correction: false,
             output_method: OutputMethod::Type,
+            typing_delay_ms: 0,
             vad_threshold: 0.01,
             audio_device: None,
         }
@@ -643,7 +646,10 @@ impl DictationPipeline {
 
         info!("Outputting text: \"{}\"", text);
 
-        let output = TextOutput::with_method(self.config.output_method);
+        let output = TextOutput::with_options(
+            self.config.output_method,
+            self.config.typing_delay_ms,
+        );
 
         match output.output(text) {
             Ok(()) => {
@@ -696,6 +702,7 @@ mod tests {
         assert!(config.llm_model_path.is_none());
         assert!(!config.use_llm_correction);
         assert_eq!(config.output_method, OutputMethod::Type);
+        assert_eq!(config.typing_delay_ms, 0);
         assert!((config.vad_threshold - 0.01).abs() < f64::EPSILON);
         assert!(config.audio_device.is_none());
     }
