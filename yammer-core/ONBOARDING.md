@@ -588,12 +588,11 @@ fn restore_window_position(
     screen_width: u32,
     screen_height: u32,
     window_width: u32,
-    window_height: u32,
 ) -> Option<(i32, i32)> {
     let config = Config::load();
     config.validated_window_position(
         screen_width, screen_height,
-        window_width, window_height
+        window_width
     )
 }
 ```

@@ -340,10 +340,9 @@ async fn get_saved_window_position(
     screen_width: u32,
     screen_height: u32,
     window_width: u32,
-    window_height: u32,
 ) -> Result<Option<(i32, i32)>, String> {
     let config = Config::load();
-    Ok(config.validated_window_position(screen_width, screen_height, window_width, window_height))
+    Ok(config.validated_window_position(screen_width, screen_height, window_width))
 }
 
 /// Simulate audio waveform data for testing (legacy command, kept for compatibility)

@@ -318,7 +318,6 @@ impl Config {
         screen_width: u32,
         screen_height: u32,
         window_width: u32,
-        _window_height: u32,
     ) -> Option<(i32, i32)> {
         let (x, y) = self.window_position()?;
 
@@ -402,7 +401,7 @@ mod tests {
         config.gui.window_x = Some(100);
         config.gui.window_y = Some(100);
         // Screen 1920x1080, window 200x100
-        let result = config.validated_window_position(1920, 1080, 200, 100);
+        let result = config.validated_window_position(1920, 1080, 200);
         assert_eq!(result, Some((100, 100)));
     }
 
@@ -413,7 +412,7 @@ mod tests {
         config.gui.window_y = Some(100);
         // Screen 1920x1080, window 200x100
         // max_x = 1920 - 50 = 1870
-        let result = config.validated_window_position(1920, 1080, 200, 100);
+        let result = config.validated_window_position(1920, 1080, 200);
         assert_eq!(result, Some((1870, 100)));
     }
 
@@ -424,7 +423,7 @@ mod tests {
         config.gui.window_y = Some(100);
         // Screen 1920x1080, window 200x100
         // min_x = -200 + 50 = -150
-        let result = config.validated_window_position(1920, 1080, 200, 100);
+        let result = config.validated_window_position(1920, 1080, 200);
         assert_eq!(result, Some((-150, 100)));
     }
 
@@ -434,7 +433,7 @@ mod tests {
         config.gui.window_x = Some(100);
         config.gui.window_y = Some(-50); // Above screen top
         // min_y = 0
-        let result = config.validated_window_position(1920, 1080, 200, 100);
+        let result = config.validated_window_position(1920, 1080, 200);
         assert_eq!(result, Some((100, 0)));
     }
 
@@ -444,13 +443,13 @@ mod tests {
         config.gui.window_x = Some(100);
         config.gui.window_y = Some(1100); // Below screen bottom
         // max_y = 1080 - 50 = 1030
-        let result = config.validated_window_position(1920, 1080, 200, 100);
+        let result = config.validated_window_position(1920, 1080, 200);
         assert_eq!(result, Some((100, 1030)));
     }
 
     #[test]
     fn test_validated_window_position_returns_none_when_not_set() {
         let config = Config::default();
-        assert!(config.validated_window_position(1920, 1080, 200, 100).is_none());
+        assert!(config.validated_window_position(1920, 1080, 200).is_none());
     }
 }

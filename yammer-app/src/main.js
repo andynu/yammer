@@ -89,8 +89,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const position = await invoke('get_saved_window_position', {
         screenWidth,
         screenHeight,
-        windowWidth,
-        windowHeight
+        windowWidth
       });
 
       if (position) {
