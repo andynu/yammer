@@ -160,6 +160,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_output_method_default() {
+        let method = OutputMethod::default();
+        assert_eq!(method, OutputMethod::Type);
+    }
+
+    #[test]
+    fn test_output_method_debug() {
+        assert_eq!(format!("{:?}", OutputMethod::Type), "Type");
+        assert_eq!(format!("{:?}", OutputMethod::Clipboard), "Clipboard");
+    }
+
+    #[test]
+    fn test_output_method_clone() {
+        let method = OutputMethod::Clipboard;
+        let cloned = method.clone();
+        assert_eq!(method, cloned);
+    }
+
+    #[test]
+    fn test_output_error_display() {
+        let err = OutputError::XdotoolNotFound;
+        assert!(err.to_string().contains("xdotool not found"));
+        assert!(err.to_string().contains("sudo apt install xdotool"));
+
+        let err = OutputError::NonZeroExit(1);
+        assert!(err.to_string().contains("non-zero"));
+        assert!(err.to_string().contains("1"));
+
+        let err = OutputError::ClipboardFailed("test error".into());
+        assert!(err.to_string().contains("Clipboard"));
+        assert!(err.to_string().contains("test error"));
+    }
+
+    #[test]
+    fn test_text_output_new() {
+        let output = TextOutput::new();
+        assert_eq!(output.method, OutputMethod::Type);
+    }
+
+    #[test]
+    fn test_text_output_default() {
+        let output = TextOutput::default();
+        assert_eq!(output.method, OutputMethod::Type);
+    }
+
+    #[test]
+    fn test_text_output_with_method() {
+        let output = TextOutput::with_method(OutputMethod::Type);
+        assert_eq!(output.method, OutputMethod::Type);
+
+        let output = TextOutput::with_method(OutputMethod::Clipboard);
+        assert_eq!(output.method, OutputMethod::Clipboard);
+    }
+
+    #[test]
+    fn test_empty_text() {
+        let output = TextOutput::new();
+        assert!(output.output("").is_ok());
+
+        let output = TextOutput::with_method(OutputMethod::Clipboard);
+        assert!(output.output("").is_ok());
+    }
+
+    #[test]
     fn test_check_xdotool() {
         // This test will pass if xdotool is installed
         let result = TextOutput::check_xdotool();
@@ -167,9 +231,27 @@ mod tests {
         println!("xdotool check result: {:?}", result);
     }
 
+    // Integration tests that require xdotool installed
+    // These are conditionally run based on xdotool availability
     #[test]
-    fn test_empty_text() {
-        let output = TextOutput::new();
-        assert!(output.output("").is_ok());
+    #[ignore] // Run with `cargo test -- --ignored` when xdotool is available
+    fn test_type_text_integration() {
+        if TextOutput::check_xdotool().is_ok() {
+            // Type to a non-focused window won't affect anything
+            let output = TextOutput::new();
+            let result = output.output("test");
+            // May fail if no window focused, but shouldn't panic
+            println!("type_text result: {:?}", result);
+        }
+    }
+
+    #[test]
+    #[ignore] // Run with `cargo test -- --ignored` when xclip/xdotool available
+    fn test_paste_text_integration() {
+        if TextOutput::check_xdotool().is_ok() {
+            let output = TextOutput::with_method(OutputMethod::Clipboard);
+            let result = output.output("test");
+            println!("paste_text result: {:?}", result);
+        }
     }
 }
