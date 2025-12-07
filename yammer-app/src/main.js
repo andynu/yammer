@@ -342,11 +342,16 @@ document.addEventListener('DOMContentLoaded', async () => {
           state.status = 'idle';
           updateUI();
 
-          // Auto-hide window after successful dictation
+          // Auto-hide window after successful dictation (unless window has focus)
           if (newState === 'done') {
-            console.log('Auto-hiding window after successful dictation');
-            await saveCurrentPosition();
-            await appWindow.hide();
+            const hasFocus = await appWindow.isFocused();
+            if (hasFocus) {
+              console.log('Window has focus, skipping auto-hide');
+            } else {
+              console.log('Auto-hiding window after successful dictation');
+              await saveCurrentPosition();
+              await appWindow.hide();
+            }
           }
         }
       }, newState === 'discarded' ? 1000 : 2000);  // Shorter timeout for discarded
