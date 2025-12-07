@@ -80,6 +80,8 @@ pub struct DictationPipeline {
     transcriber: Option<Arc<Transcriber>>,
     corrector: Option<Arc<Corrector>>,
     event_tx: mpsc::Sender<PipelineEvent>,
+    /// Pre-initialized audio capture to reduce keypress-to-listening latency
+    audio_capture: Option<AudioCapture>,
 }
 
 impl DictationPipeline {
@@ -92,6 +94,7 @@ impl DictationPipeline {
             transcriber: None,
             corrector: None,
             event_tx,
+            audio_capture: None,
         }
     }
 
@@ -147,6 +150,45 @@ impl DictationPipeline {
             info!("LLM correction disabled");
         }
 
+        // Pre-initialize audio capture to reduce keypress-to-listening latency
+        info!("Pre-initializing audio capture...");
+        let capture = if let Some(ref device_name) = self.config.audio_device {
+            info!("Using configured audio device: {}", device_name);
+            match AudioCapture::with_device(device_name) {
+                Ok(c) => {
+                    info!(
+                        "Audio capture initialized: {} Hz, {} channels",
+                        c.sample_rate(),
+                        c.channels()
+                    );
+                    Some(c)
+                }
+                Err(e) => {
+                    warn!("Failed to initialize audio device '{}': {}", device_name, e);
+                    warn!("Audio capture will be initialized on first use");
+                    None
+                }
+            }
+        } else {
+            info!("Using default audio device");
+            match AudioCapture::new() {
+                Ok(c) => {
+                    info!(
+                        "Audio capture initialized: {} Hz, {} channels",
+                        c.sample_rate(),
+                        c.channels()
+                    );
+                    Some(c)
+                }
+                Err(e) => {
+                    warn!("Failed to initialize default audio: {}", e);
+                    warn!("Audio capture will be initialized on first use");
+                    None
+                }
+            }
+        };
+        self.audio_capture = capture;
+
         info!("Pipeline initialization complete");
         Ok(())
     }
@@ -198,6 +240,50 @@ impl DictationPipeline {
 
     fn is_discarded(&self) -> bool {
         self.is_discarded.load(Ordering::SeqCst)
+    }
+
+    /// Create a new audio capture instance based on config
+    fn create_audio_capture(&self) -> Result<AudioCapture, String> {
+        if let Some(ref device_name) = self.config.audio_device {
+            info!("Using configured audio device: {}", device_name);
+            AudioCapture::with_device(device_name).map_err(|e| {
+                let err = format!("Failed to initialize audio device '{}': {}", device_name, e);
+                error!("{}", err);
+                err
+            })
+        } else {
+            info!("Using default audio device");
+            AudioCapture::new().map_err(|e| {
+                let err = format!("Failed to initialize audio: {}", e);
+                error!("{}", err);
+                err
+            })
+        }
+    }
+
+    /// Try to start capture on a pre-initialized AudioCapture
+    /// Returns the capture reference, sample rate, handle, and receiver
+    fn try_start_capture<'a>(
+        &self,
+        capture: &'a Option<AudioCapture>,
+    ) -> Result<
+        (
+            &'a AudioCapture,
+            u32,
+            yammer_audio::CaptureHandle,
+            mpsc::Receiver<Vec<f32>>,
+        ),
+        String,
+    > {
+        let c = capture
+            .as_ref()
+            .ok_or_else(|| "No pre-initialized capture".to_string())?;
+        let sr = c.sample_rate();
+        debug!("Using pre-initialized audio capture: {} Hz", sr);
+        let (h, r) = c
+            .start_capture(50)
+            .map_err(|e| format!("Failed to start pre-initialized capture: {}", e))?;
+        Ok((c, sr, h, r))
     }
 
     /// Run the complete dictation pipeline (blocking)
@@ -306,41 +392,34 @@ impl DictationPipeline {
         self.send_state(PipelineState::Listening);
         info!("Starting audio capture...");
 
-        // Set up audio capture (use configured device or default)
-        let capture = if let Some(ref device_name) = self.config.audio_device {
-            info!("Using configured audio device: {}", device_name);
-            match AudioCapture::with_device(device_name) {
-                Ok(c) => c,
-                Err(e) => {
-                    let err = format!("Failed to initialize audio device '{}': {}", device_name, e);
-                    error!("{}", err);
-                    return Err(err);
+        // Try to use pre-initialized capture, falling back to on-demand creation
+        let fallback_capture: Option<AudioCapture>;
+        let (capture, input_sample_rate, _handle, rx) =
+            match self.try_start_capture(&self.audio_capture) {
+                Ok((c, sr, h, r)) => (c, sr, h, r),
+                Err(pre_init_err) => {
+                    // Pre-initialized capture failed (device disconnected?), try fresh init
+                    warn!(
+                        "Pre-initialized capture failed: {}, attempting fresh initialization",
+                        pre_init_err
+                    );
+                    fallback_capture = Some(self.create_audio_capture()?);
+                    let c = fallback_capture.as_ref().unwrap();
+                    let sr = c.sample_rate();
+                    match c.start_capture(50) {
+                        Ok((h, r)) => (c, sr, h, r),
+                        Err(e) => {
+                            let err = format!("Failed to start capture: {}", e);
+                            error!("{}", err);
+                            return Err(err);
+                        }
+                    }
                 }
-            }
-        } else {
-            info!("Using default audio device");
-            match AudioCapture::new() {
-                Ok(c) => c,
-                Err(e) => {
-                    let err = format!("Failed to initialize audio: {}", e);
-                    error!("{}", err);
-                    return Err(err);
-                }
-            }
-        };
+            };
 
-        let input_sample_rate = capture.sample_rate();
-        info!("Audio capture initialized: {} Hz", input_sample_rate);
-
-        // Start continuous capture (50ms chunks)
-        let (_handle, mut rx) = match capture.start_capture(50) {
-            Ok(result) => result,
-            Err(e) => {
-                let err = format!("Failed to start capture: {}", e);
-                error!("{}", err);
-                return Err(err);
-            }
-        };
+        let _ = capture; // Silence unused warning (we just need to keep fallback_capture alive)
+        info!("Audio capture ready: {} Hz", input_sample_rate);
+        let mut rx = rx;
 
         // VAD processor (still useful for detecting speech patterns)
         let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
