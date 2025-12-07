@@ -13,3 +13,6 @@ cpal.workspace = true
 hound.workspace = true
 ringbuf.workspace = true
 rubato.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

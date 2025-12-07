@@ -479,3 +479,152 @@ pub fn write_wav(path: &std::path::Path, samples: &[f32], sample_rate: u32) -> s
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_audio_error_display() {
+        let err = AudioError::NoInputDevice;
+        assert!(err.to_string().contains("No input device"));
+
+        let err = AudioError::Device("test device error".into());
+        assert!(err.to_string().contains("Device error"));
+        assert!(err.to_string().contains("test device error"));
+
+        let err = AudioError::Stream("test stream error".into());
+        assert!(err.to_string().contains("Stream error"));
+        assert!(err.to_string().contains("test stream error"));
+
+        let err = AudioError::Config("test config error".into());
+        assert!(err.to_string().contains("Configuration error"));
+        assert!(err.to_string().contains("test config error"));
+    }
+
+    #[test]
+    fn test_input_device_info_debug_clone() {
+        let info = InputDeviceInfo {
+            name: "Test Device".to_string(),
+            is_default: true,
+            configs: vec![],
+        };
+
+        let cloned = info.clone();
+        assert_eq!(info.name, cloned.name);
+        assert_eq!(info.is_default, cloned.is_default);
+
+        let debug_str = format!("{:?}", info);
+        assert!(debug_str.contains("Test Device"));
+    }
+
+    #[test]
+    fn test_stream_config_info_debug_clone() {
+        let config = StreamConfigInfo {
+            channels: 2,
+            min_sample_rate: 44100,
+            max_sample_rate: 48000,
+            sample_format: "F32".to_string(),
+        };
+
+        let cloned = config.clone();
+        assert_eq!(config.channels, cloned.channels);
+        assert_eq!(config.min_sample_rate, cloned.min_sample_rate);
+        assert_eq!(config.max_sample_rate, cloned.max_sample_rate);
+        assert_eq!(config.sample_format, cloned.sample_format);
+
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("F32"));
+    }
+
+    #[test]
+    fn test_audio_chunk_debug_clone() {
+        let chunk = AudioChunk {
+            samples: vec![0.0, 0.5, -0.5],
+            sample_rate: 16000,
+        };
+
+        let cloned = chunk.clone();
+        assert_eq!(chunk.samples, cloned.samples);
+        assert_eq!(chunk.sample_rate, cloned.sample_rate);
+
+        let debug_str = format!("{:?}", chunk);
+        assert!(debug_str.contains("16000"));
+    }
+
+    #[test]
+    fn test_write_wav_roundtrip() {
+        use tempfile::NamedTempFile;
+
+        let samples: Vec<f32> = vec![0.0, 0.5, -0.5, 0.25, -0.25];
+        let sample_rate = 16000;
+
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        let path = temp_file.path();
+
+        // Write WAV
+        write_wav(path, &samples, sample_rate).expect("Failed to write WAV");
+
+        // Verify file exists and has content
+        let metadata = std::fs::metadata(path).expect("Failed to get file metadata");
+        assert!(metadata.len() > 0);
+
+        // Read back with hound
+        let reader = hound::WavReader::open(path).expect("Failed to open WAV");
+        let spec = reader.spec();
+        assert_eq!(spec.sample_rate, sample_rate);
+        assert_eq!(spec.channels, 1);
+
+        let read_samples: Vec<i16> = reader.into_samples().filter_map(Result::ok).collect();
+        assert_eq!(read_samples.len(), samples.len());
+    }
+
+    #[test]
+    fn test_write_wav_empty_samples() {
+        use tempfile::NamedTempFile;
+
+        let samples: Vec<f32> = vec![];
+        let sample_rate = 48000;
+
+        let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        let path = temp_file.path();
+
+        // Writing empty samples should succeed
+        write_wav(path, &samples, sample_rate).expect("Failed to write empty WAV");
+
+        // Read back
+        let reader = hound::WavReader::open(path).expect("Failed to open WAV");
+        let read_samples: Vec<i16> = reader.into_samples().filter_map(Result::ok).collect();
+        assert!(read_samples.is_empty());
+    }
+
+    // Integration tests that require audio hardware
+    #[test]
+    #[ignore] // Run with `cargo test -- --ignored` when audio hardware available
+    fn test_list_devices_integration() {
+        let result = AudioCapture::list_devices();
+        println!("list_devices result: {:?}", result);
+        // May return empty list on headless systems
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore] // Run with `cargo test -- --ignored` when audio hardware available
+    fn test_audio_capture_new_integration() {
+        let result = AudioCapture::new();
+        match result {
+            Ok(capture) => {
+                println!("Sample rate: {}", capture.sample_rate());
+                println!("Channels: {}", capture.channels());
+                assert!(capture.sample_rate() > 0);
+                assert!(capture.channels() > 0);
+            }
+            Err(AudioError::NoInputDevice) => {
+                println!("No input device available (expected on headless systems)");
+            }
+            Err(e) => {
+                println!("Unexpected error: {:?}", e);
+            }
+        }
+    }
+}
