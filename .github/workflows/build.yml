@@ -9,7 +9,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  APPIMAGE_EXTRACT_AND_RUN: 1
 
 jobs:
   build-linux:
@@ -36,8 +35,7 @@ jobs:
             patchelf \
             libasound2-dev \
             libclang-dev \
-            cmake \
-            libfuse2
+            cmake
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -58,14 +56,9 @@ jobs:
         working-directory: yammer-app
         run: npm ci
 
-      - name: Build Tauri app (deb/rpm)
+      - name: Build Tauri app
         working-directory: yammer-app
         run: npm run tauri build -- --bundles deb,rpm
-
-      - name: Build AppImage (may fail on CI runners)
-        working-directory: yammer-app
-        continue-on-error: true
-        run: npm run tauri build -- --bundles appimage
 
       - name: Upload deb artifact
         uses: actions/upload-artifact@v4
@@ -80,13 +73,6 @@ jobs:
           name: yammer-linux-rpm
           path: target/release/bundle/rpm/*.rpm
           if-no-files-found: error
-
-      - name: Upload AppImage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: yammer-linux-appimage
-          path: target/release/bundle/appimage/*.AppImage
-          if-no-files-found: warn
 
   release:
     needs: build-linux
@@ -106,6 +92,5 @@ jobs:
           files: |
             artifacts/yammer-linux-deb/*.deb
             artifacts/yammer-linux-rpm/*.rpm
-            artifacts/yammer-linux-appimage/*.AppImage
           draft: true
           generate_release_notes: true
