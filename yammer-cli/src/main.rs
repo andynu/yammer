@@ -295,6 +295,42 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Find a downloaded model of the specified type
+///
+/// Returns the path to the first ready model of the given type, or an error
+/// if no model is found. Uses stderr for output when `use_stderr` is true
+/// (for dictate mode where stdout is used for transcription).
+async fn find_downloaded_model(model_type: ModelType, use_stderr: bool) -> Result<PathBuf> {
+    let manager = DownloadManager::new(DownloadManager::default_model_dir());
+    let registry = get_model_registry();
+
+    for m in registry.iter() {
+        if m.model_type == model_type {
+            let status = manager.check_status(m).await;
+            if let ModelStatus::Ready { path } = status {
+                if use_stderr {
+                    eprintln!("Using model: {}", m.name);
+                } else {
+                    println!("Using model: {}", m.name);
+                }
+                return Ok(path);
+            }
+        }
+    }
+
+    let model_type_str = match model_type {
+        ModelType::Whisper => "Whisper",
+        ModelType::Llm => "LLM",
+    };
+    let msg = format!("No {} model found. Download one first:\n  yammer download-models", model_type_str);
+    if use_stderr {
+        eprintln!("{}", msg);
+    } else {
+        println!("{}", msg);
+    }
+    anyhow::bail!("No {} model available", model_type_str)
+}
+
 fn launch_gui(toggle: bool) -> Result<()> {
     use std::process::Command;
 
@@ -682,35 +718,9 @@ async fn vad_test(threshold: f32, duration_secs: u64, device: Option<String>) ->
 }
 
 async fn transcribe_file(file: PathBuf, model_path: Option<PathBuf>, timestamps: bool) -> Result<()> {
-    // Find model path
-    let model = if let Some(path) = model_path {
-        path
-    } else {
-        // Auto-detect from downloaded models
-        let manager = DownloadManager::new(DownloadManager::default_model_dir());
-        let registry = get_model_registry();
-
-        // Find a ready Whisper model
-        let mut found_model = None;
-        for m in registry.iter() {
-            if m.model_type == ModelType::Whisper {
-                let status = manager.check_status(m).await;
-                if let ModelStatus::Ready { path } = status {
-                    println!("Using model: {} ({:?})", m.name, path);
-                    found_model = Some(path);
-                    break;
-                }
-            }
-        }
-
-        match found_model {
-            Some(path) => path,
-            None => {
-                println!("No Whisper model found. Download one first:");
-                println!("  yammer download-models");
-                anyhow::bail!("No Whisper model available");
-            }
-        }
+    let model = match model_path {
+        Some(path) => path,
+        None => find_downloaded_model(ModelType::Whisper, false).await?,
     };
 
     println!("Loading Whisper model...");
@@ -806,35 +816,9 @@ async fn dictate(
     device: Option<String>,
     duration_secs: u64,
 ) -> Result<()> {
-    // Find model path
-    let model = if let Some(path) = model_path {
-        path
-    } else {
-        // Auto-detect from downloaded models
-        let manager = DownloadManager::new(DownloadManager::default_model_dir());
-        let registry = get_model_registry();
-
-        // Find a ready Whisper model
-        let mut found_model = None;
-        for m in registry.iter() {
-            if m.model_type == ModelType::Whisper {
-                let status = manager.check_status(m).await;
-                if let ModelStatus::Ready { path } = status {
-                    eprintln!("Using model: {}", m.name);
-                    found_model = Some(path);
-                    break;
-                }
-            }
-        }
-
-        match found_model {
-            Some(path) => path,
-            None => {
-                eprintln!("No Whisper model found. Download one first:");
-                eprintln!("  yammer download-models");
-                anyhow::bail!("No Whisper model available");
-            }
-        }
+    let model = match model_path {
+        Some(path) => path,
+        None => find_downloaded_model(ModelType::Whisper, true).await?,
     };
 
     eprintln!("Loading Whisper model...");
@@ -975,35 +959,9 @@ async fn dictate(
 }
 
 async fn correct_text(text: String, model_path: Option<PathBuf>) -> Result<()> {
-    // Find model path
-    let model = if let Some(path) = model_path {
-        path
-    } else {
-        // Auto-detect from downloaded models
-        let manager = DownloadManager::new(DownloadManager::default_model_dir());
-        let registry = get_model_registry();
-
-        // Find a ready LLM model
-        let mut found_model = None;
-        for m in registry.iter() {
-            if m.model_type == ModelType::Llm {
-                let status = manager.check_status(m).await;
-                if let ModelStatus::Ready { path } = status {
-                    println!("Using model: {}", m.name);
-                    found_model = Some(path);
-                    break;
-                }
-            }
-        }
-
-        match found_model {
-            Some(path) => path,
-            None => {
-                println!("No LLM model found. Download one first:");
-                println!("  yammer download-models");
-                anyhow::bail!("No LLM model available");
-            }
-        }
+    let model = match model_path {
+        Some(path) => path,
+        None => find_downloaded_model(ModelType::Llm, false).await?,
     };
 
     println!("Loading LLM model...");
