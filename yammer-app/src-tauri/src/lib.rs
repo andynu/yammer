@@ -96,6 +96,7 @@ async fn initialize_pipeline(
         typing_delay_ms: app_config.output.typing_delay_ms,
         vad_threshold: app_config.audio.vad_threshold,
         audio_device: app_config.audio.device.clone(),
+        max_recording_seconds: app_config.audio.max_recording_seconds,
     };
 
     let mut pipeline = DictationPipeline::new(pipeline_config, state.event_tx.clone());

@@ -58,6 +58,8 @@ pub struct PipelineConfig {
     pub typing_delay_ms: u32,
     pub vad_threshold: f64,
     pub audio_device: Option<String>,
+    /// Maximum recording duration in seconds (0 = no limit)
+    pub max_recording_seconds: u32,
 }
 
 impl Default for PipelineConfig {
@@ -70,6 +72,7 @@ impl Default for PipelineConfig {
             typing_delay_ms: 0,
             vad_threshold: 0.01,
             audio_device: None,
+            max_recording_seconds: 0, // 0 = no limit
         }
     }
 }
@@ -488,10 +491,15 @@ impl DictationPipeline {
         // VAD processor (still useful for detecting speech patterns)
         let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
 
-        // Pre-allocate buffer for 30 seconds of audio (max recording duration)
-        // This avoids repeated reallocations during recording
-        let max_samples = input_sample_rate as usize * 30;
-        let mut all_samples: Vec<f32> = Vec::with_capacity(max_samples);
+        // Pre-allocate buffer for expected recording duration
+        // If no limit, pre-allocate for 60s and let it grow as needed
+        let prealloc_seconds = if self.config.max_recording_seconds > 0 {
+            self.config.max_recording_seconds as usize
+        } else {
+            60 // Default pre-allocation when no limit
+        };
+        let prealloc_samples = input_sample_rate as usize * prealloc_seconds;
+        let mut all_samples: Vec<f32> = Vec::with_capacity(prealloc_samples);
 
         // Process audio chunks in a blocking loop
         // Note: We use blocking_recv since we're in spawn_blocking
@@ -551,9 +559,10 @@ impl DictationPipeline {
                 }
             }
 
-            // Safety timeout: if recording for too long, stop
-            if all_samples.len() > input_sample_rate as usize * 30 {
-                warn!("Recording timeout (30s max)");
+            // Safety timeout: if recording for too long, stop (0 = no limit)
+            let max_seconds = self.config.max_recording_seconds;
+            if max_seconds > 0 && all_samples.len() > input_sample_rate as usize * max_seconds as usize {
+                warn!("Recording timeout ({}s max)", max_seconds);
 
                 info!(
                     "Processing {} samples ({:.2}s) at {} Hz",
