@@ -221,6 +221,7 @@ body {
   transition: background-color 0.2s ease;
   max-height: 100px;
   overflow-y: auto;
+  position: relative;
 }
 
 .transcript-area:hover {
@@ -249,6 +250,62 @@ body {
 
 .transcript-text.copied {
   color: #4caf50;
+}
+
+/* AI cleanup toggle button */
+.ai-toggle {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.2s, opacity 0.2s;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.transcript-area:hover .ai-toggle,
+.ai-toggle.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ai-toggle svg {
+  fill: #888;
+  transition: fill 0.2s;
+}
+
+.ai-toggle:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ai-toggle:hover svg {
+  fill: #aaa;
+}
+
+/* Active state - AI cleanup is enabled (showing cleaned text) */
+.ai-toggle.active svg {
+  fill: #2196f3;
+}
+
+.ai-toggle.active:hover svg {
+  fill: #42a5f5;
+}
+
+/* Inactive state - showing raw whisper text */
+.ai-toggle:not(.active) svg {
+  fill: #666;
+}
+
+.ai-toggle:not(.active):hover svg {
+  fill: #888;
 }
 
 /* Waveform visualization - clickable to toggle dictation */

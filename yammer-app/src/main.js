@@ -169,21 +169,29 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const transcriptText = document.querySelector('.transcript-text');
   const transcriptArea = document.querySelector('.transcript-area');
+  const aiToggleBtn = document.querySelector('.ai-toggle');
   const waveformCanvas = document.getElementById('waveform');
   const waveformCtx = waveformCanvas.getContext('2d');
 
-  // Click on transcript to copy to clipboard
+  // Click on transcript to copy to clipboard (copies whichever version is visible)
   transcriptArea.addEventListener('click', async (e) => {
-    e.stopPropagation(); // Don't trigger window drag
-    console.log('Transcript area clicked');
-    console.log('Current transcript:', state.transcript);
-    console.log('Transcript trimmed:', state.transcript ? state.transcript.trim() : '(empty)');
+    // Ignore clicks on the AI toggle button
+    if (e.target.closest('.ai-toggle')) {
+      return;
+    }
 
-    if (state.transcript && state.transcript.trim()) {
+    e.stopPropagation(); // Don't trigger window drag
+
+    // Get the currently visible text based on toggle state
+    const visibleText = getVisibleTranscript();
+    console.log('Transcript area clicked');
+    console.log('Visible transcript:', visibleText);
+
+    if (visibleText && visibleText.trim()) {
       console.log('Attempting to copy to clipboard...');
       try {
-        await navigator.clipboard.writeText(state.transcript);
-        console.log('SUCCESS: Copied to clipboard:', state.transcript);
+        await navigator.clipboard.writeText(visibleText);
+        console.log('SUCCESS: Copied to clipboard:', visibleText);
 
         // Visual feedback - briefly highlight
         transcriptText.classList.add('copied');
@@ -198,14 +206,45 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // AI toggle button - switch between raw and corrected transcripts
+  aiToggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); // Don't trigger transcript area click
+    console.log('AI toggle clicked');
+
+    // Only toggle if we have both versions
+    if (state.rawTranscript && state.correctedTranscript) {
+      state.showCorrected = !state.showCorrected;
+      console.log('Showing corrected:', state.showCorrected);
+      updateUI();
+    }
+  });
+
+  // Prevent mousedown from triggering drag
+  aiToggleBtn.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+  });
+
   // State management
   let state = {
     status: 'idle', // idle, listening, processing, correcting, done, error
-    transcript: '',
+    transcript: '',       // Currently displayed transcript (for backward compat)
+    rawTranscript: '',    // Raw Whisper output (before LLM cleanup)
+    correctedTranscript: '', // LLM-corrected output
+    showCorrected: true,  // Toggle: true = show corrected, false = show raw
     isPartial: false,
     pipelineInitialized: false,
     isRunning: false
   };
+
+  // Get the transcript to display based on toggle state
+  function getVisibleTranscript() {
+    // If we have both versions, respect the toggle
+    if (state.rawTranscript && state.correctedTranscript) {
+      return state.showCorrected ? state.correctedTranscript : state.rawTranscript;
+    }
+    // Otherwise return whatever we have
+    return state.transcript || state.rawTranscript || state.correctedTranscript || '';
+  }
 
   // Waveform visualization
   const WAVEFORM_WIDTH = 268;
@@ -268,9 +307,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusText.textContent = statusLabels[state.status] || 'Ready';
     }
 
-    // Update transcript
-    if (state.transcript) {
-      transcriptText.textContent = state.transcript;
+    // Update transcript - use visible transcript based on toggle
+    const visibleText = getVisibleTranscript();
+    if (visibleText) {
+      transcriptText.textContent = visibleText;
       transcriptText.classList.remove('placeholder');
 
       // Mark as partial if still processing
@@ -285,6 +325,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         : 'Initializing...';
       transcriptText.classList.add('placeholder');
       transcriptText.classList.remove('partial');
+    }
+
+    // Update AI toggle button visibility and state
+    const hasBothVersions = state.rawTranscript && state.correctedTranscript;
+    if (hasBothVersions) {
+      aiToggleBtn.classList.add('visible');
+      if (state.showCorrected) {
+        aiToggleBtn.classList.add('active');
+        aiToggleBtn.title = 'Showing AI cleaned (click for raw)';
+      } else {
+        aiToggleBtn.classList.remove('active');
+        aiToggleBtn.title = 'Showing raw Whisper (click for cleaned)';
+      }
+    } else {
+      aiToggleBtn.classList.remove('visible', 'active');
+      aiToggleBtn.title = 'Toggle AI cleanup';
     }
   }
 
@@ -331,6 +387,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Clear transcript on new listening session
     if (newState === 'listening') {
       state.transcript = '';
+      state.rawTranscript = '';
+      state.correctedTranscript = '';
+      state.showCorrected = true; // Reset to show corrected by default
       state.isPartial = false;
     }
 
@@ -360,10 +419,32 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // Listen for transcript updates
+  // When LLM correction is enabled:
+  //   - First transcript comes with isPartial=true (raw Whisper output)
+  //   - Second transcript comes with isPartial=false (LLM-corrected)
+  // When LLM correction is disabled:
+  //   - Only one transcript with isPartial=false (raw Whisper output)
   await listen('transcript', (event) => {
     const { text, isPartial } = event.payload;
     console.log('Transcript:', text, 'isPartial:', isPartial);
 
+    if (isPartial) {
+      // This is the raw Whisper output (before LLM correction)
+      state.rawTranscript = text;
+      state.correctedTranscript = ''; // Clear any previous corrected version
+    } else {
+      // This is either the corrected version or the only version (no LLM)
+      if (state.rawTranscript) {
+        // We have a raw version, so this must be the corrected one
+        state.correctedTranscript = text;
+      } else {
+        // No raw version, so this is the only version (LLM disabled)
+        state.rawTranscript = text;
+        state.correctedTranscript = ''; // No corrected version available
+      }
+    }
+
+    // Also update legacy transcript field for compatibility
     state.transcript = text;
     state.isPartial = isPartial;
     updateUI();
