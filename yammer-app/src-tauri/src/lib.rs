@@ -529,7 +529,10 @@ pub fn run() {
                     "show" => {
                         info!("Tray: Show Window clicked");
                         if let Some(window) = app.get_webview_window("main") {
+                            // Robust show: unminimize, show, and ensure on top
+                            let _ = window.unminimize();
                             let _ = window.show();
+                            let _ = window.set_always_on_top(true);
                             let _ = window.set_focus();
                         }
                     }
