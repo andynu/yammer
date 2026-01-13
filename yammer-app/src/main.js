@@ -533,9 +533,28 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  // Stop dictation (for press-hold-release hotkey)
+  async function stopDictation() {
+    // Only stop if currently running
+    if (!state.isRunning) {
+      console.log('Not recording, ignoring stop');
+      return;
+    }
+
+    console.log('Stopping dictation (key released)');
+
+    try {
+      await invoke('stop_dictation');
+      console.log('Dictation stop signal sent');
+    } catch (e) {
+      console.error('Stop dictation error:', e);
+    }
+  }
+
   // Listen for global hotkey events
   await listen('dictation-toggle', toggleDictation);
   await listen('dictation-start', startDictation);
+  await listen('dictation-stop', stopDictation);
 
   // Record button - clear toggle behavior
   const recordBtn = document.querySelector('.record-btn');
