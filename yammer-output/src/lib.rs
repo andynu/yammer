@@ -88,9 +88,23 @@ impl TextOutput {
             return Ok(());
         }
 
+        // Sanitize control characters that can break terminals
+        let sanitized = sanitize_for_terminal(text);
+        if sanitized.len() != text.len() {
+            warn!(
+                "Stripped {} dangerous control characters from output",
+                text.len() - sanitized.len()
+            );
+        }
+
+        if sanitized.is_empty() {
+            debug!("Text was entirely control characters, nothing to output");
+            return Ok(());
+        }
+
         match self.method {
-            OutputMethod::Type => self.type_text(text),
-            OutputMethod::Clipboard => self.paste_text(text),
+            OutputMethod::Type => self.type_text(&sanitized),
+            OutputMethod::Clipboard => self.paste_text(&sanitized),
         }
     }
 
@@ -162,6 +176,29 @@ impl TextOutput {
             Err(OutputError::NonZeroExit(code))
         }
     }
+}
+
+/// Sanitize text by removing control characters that can break terminals
+///
+/// Strips C0 control characters (0x00-0x1F) except:
+/// - Tab (0x09) - harmless whitespace
+/// - Newline (0x0A) - needed for multi-line text
+/// - Carriage return (0x0D) - part of Windows line endings
+///
+/// Dangerous characters this removes:
+/// - Ctrl+C (0x03) - SIGINT, kills processes
+/// - Ctrl+D (0x04) - EOF, exits shells/programs
+/// - Ctrl+S (0x13) - XOFF, freezes terminal
+/// - Ctrl+Z (0x1A) - SIGTSTP, suspends processes
+/// - Escape (0x1B) - starts terminal escape sequences
+/// - And other control characters
+pub fn sanitize_for_terminal(text: &str) -> String {
+    text.chars()
+        .filter(|&c| {
+            // Allow printable characters and safe whitespace
+            !c.is_control() || c == '\t' || c == '\n' || c == '\r'
+        })
+        .collect()
 }
 
 /// Convenience function to type text using default settings
@@ -257,6 +294,61 @@ mod tests {
 
         let output = TextOutput::with_method(OutputMethod::Clipboard);
         assert!(output.output("").is_ok());
+    }
+
+    #[test]
+    fn test_sanitize_preserves_normal_text() {
+        assert_eq!(sanitize_for_terminal("Hello, world!"), "Hello, world!");
+        assert_eq!(sanitize_for_terminal("Testing 123"), "Testing 123");
+        assert_eq!(sanitize_for_terminal("Special chars: @#$%^&*()"), "Special chars: @#$%^&*()");
+    }
+
+    #[test]
+    fn test_sanitize_preserves_safe_whitespace() {
+        // Tab, newline, carriage return should be preserved
+        assert_eq!(sanitize_for_terminal("line1\nline2"), "line1\nline2");
+        assert_eq!(sanitize_for_terminal("col1\tcol2"), "col1\tcol2");
+        assert_eq!(sanitize_for_terminal("windows\r\nline"), "windows\r\nline");
+    }
+
+    #[test]
+    fn test_sanitize_removes_dangerous_control_chars() {
+        // Ctrl+C (0x03) - SIGINT
+        assert_eq!(sanitize_for_terminal("before\x03after"), "beforeafter");
+        // Ctrl+D (0x04) - EOF
+        assert_eq!(sanitize_for_terminal("before\x04after"), "beforeafter");
+        // Ctrl+S (0x13) - XOFF (freezes terminal)
+        assert_eq!(sanitize_for_terminal("before\x13after"), "beforeafter");
+        // Ctrl+Z (0x1A) - SIGTSTP
+        assert_eq!(sanitize_for_terminal("before\x1Aafter"), "beforeafter");
+        // Escape (0x1B) - starts escape sequences
+        assert_eq!(sanitize_for_terminal("before\x1Bafter"), "beforeafter");
+        // Ctrl+\ (0x1C) - SIGQUIT
+        assert_eq!(sanitize_for_terminal("before\x1Cafter"), "beforeafter");
+    }
+
+    #[test]
+    fn test_sanitize_removes_null_and_other_c0() {
+        // Null byte
+        assert_eq!(sanitize_for_terminal("before\x00after"), "beforeafter");
+        // Bell
+        assert_eq!(sanitize_for_terminal("before\x07after"), "beforeafter");
+        // Backspace
+        assert_eq!(sanitize_for_terminal("before\x08after"), "beforeafter");
+    }
+
+    #[test]
+    fn test_sanitize_handles_all_control_chars() {
+        // Text with multiple dangerous chars
+        let nasty = "Hello\x03\x04\x13\x1B[31mWorld\x1A";
+        let clean = sanitize_for_terminal(nasty);
+        assert_eq!(clean, "Hello[31mWorld");
+    }
+
+    #[test]
+    fn test_sanitize_unicode_preserved() {
+        assert_eq!(sanitize_for_terminal("Hello 世界 🌍"), "Hello 世界 🌍");
+        assert_eq!(sanitize_for_terminal("Ümläuts"), "Ümläuts");
     }
 
     #[test]
