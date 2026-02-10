@@ -1,6 +1,6 @@
 [package]
 name = "yammer-app"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Linux dictation app - local speech-to-text with LLM correction"
 authors = ["Andy"]
