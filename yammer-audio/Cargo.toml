@@ -12,6 +12,7 @@ tracing.workspace = true
 cpal.workspace = true
 hound.workspace = true
 rubato.workspace = true
+libc = "0.2.181"
 
 [dev-dependencies]
 tempfile = "3"

@@ -8,6 +8,43 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+/// Temporarily suppress stderr to hide ALSA/JACK probe noise.
+/// Returns a guard that restores stderr when dropped.
+#[cfg(target_os = "linux")]
+struct StderrSuppressor {
+    saved_fd: i32,
+}
+
+#[cfg(target_os = "linux")]
+impl StderrSuppressor {
+    fn new() -> Option<Self> {
+        unsafe {
+            let saved_fd = libc::dup(2);
+            if saved_fd < 0 {
+                return None;
+            }
+            let devnull = libc::open(b"/dev/null\0".as_ptr() as *const _, libc::O_WRONLY);
+            if devnull < 0 {
+                libc::close(saved_fd);
+                return None;
+            }
+            libc::dup2(devnull, 2);
+            libc::close(devnull);
+            Some(Self { saved_fd })
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for StderrSuppressor {
+    fn drop(&mut self) {
+        unsafe {
+            libc::dup2(self.saved_fd, 2);
+            libc::close(self.saved_fd);
+        }
+    }
+}
+
 /// Audio capture errors
 #[derive(Error, Debug)]
 pub enum AudioError {
@@ -128,6 +165,10 @@ impl AudioCapture {
 
     /// List available input devices
     pub fn list_devices() -> AudioResult<Vec<InputDeviceInfo>> {
+        // Suppress ALSA/JACK probe noise on stderr
+        #[cfg(target_os = "linux")]
+        let _suppress = StderrSuppressor::new();
+
         let host = cpal::default_host();
         let default_name = host
             .default_input_device()
