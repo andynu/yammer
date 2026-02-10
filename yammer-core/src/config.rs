@@ -131,6 +131,8 @@ pub struct GuiConfig {
     /// Window Y position (if None, uses center or default)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_y: Option<i32>,
+    /// Seconds of idle time before unloading models from memory (0 = never unload)
+    pub idle_unload_seconds: u64,
 }
 
 impl Default for GuiConfig {
@@ -138,6 +140,7 @@ impl Default for GuiConfig {
         Self {
             window_x: None,
             window_y: None,
+            idle_unload_seconds: 7200, // 2 hours
         }
     }
 }
@@ -454,5 +457,27 @@ mod tests {
     fn test_validated_window_position_returns_none_when_not_set() {
         let config = Config::default();
         assert!(config.validated_window_position(1920, 1080, 200).is_none());
+    }
+
+    #[test]
+    fn test_idle_unload_seconds_default() {
+        let config = Config::default();
+        assert_eq!(config.gui.idle_unload_seconds, 7200);
+    }
+
+    #[test]
+    fn test_idle_unload_seconds_zero_means_disabled() {
+        let mut config = Config::default();
+        config.gui.idle_unload_seconds = 0;
+        assert_eq!(config.gui.idle_unload_seconds, 0);
+    }
+
+    #[test]
+    fn test_idle_unload_seconds_roundtrip() {
+        let mut config = Config::default();
+        config.gui.idle_unload_seconds = 300;
+        let toml_str = config.to_toml().unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.gui.idle_unload_seconds, 300);
     }
 }

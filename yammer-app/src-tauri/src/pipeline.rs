@@ -22,6 +22,7 @@ pub enum PipelineState {
     Done,
     Error,
     Discarded,
+    Reloading,
 }
 
 impl PipelineState {
@@ -34,6 +35,7 @@ impl PipelineState {
             PipelineState::Done => "done",
             PipelineState::Error => "error",
             PipelineState::Discarded => "discarded",
+            PipelineState::Reloading => "reloading",
         }
     }
 }
@@ -120,10 +122,11 @@ impl DictationPipeline {
         }
 
         info!("Loading Whisper model...");
+        let t0 = std::time::Instant::now();
         match Transcriber::new(&self.config.whisper_model_path) {
             Ok(transcriber) => {
                 self.transcriber = Some(Arc::new(transcriber));
-                info!("Whisper model loaded successfully");
+                info!("Whisper model loaded in {:.2}s", t0.elapsed().as_secs_f64());
             }
             Err(e) => {
                 let err = format!("Failed to load Whisper model: {}", e);
@@ -139,10 +142,11 @@ impl DictationPipeline {
                     warn!("LLM model not found: {:?}, correction disabled", llm_path);
                 } else {
                     info!("Loading LLM model from {:?}...", llm_path);
+                    let t0 = std::time::Instant::now();
                     match Corrector::new(llm_path) {
                         Ok(corrector) => {
                             self.corrector = Some(Arc::new(corrector));
-                            info!("LLM model loaded successfully");
+                            info!("LLM model loaded in {:.2}s", t0.elapsed().as_secs_f64());
                         }
                         Err(e) => {
                             let err = format!("Failed to load LLM model: {}", e);
@@ -778,6 +782,7 @@ mod tests {
         assert_eq!(PipelineState::Done.as_str(), "done");
         assert_eq!(PipelineState::Error.as_str(), "error");
         assert_eq!(PipelineState::Discarded.as_str(), "discarded");
+        assert_eq!(PipelineState::Reloading.as_str(), "reloading");
     }
 
     #[test]

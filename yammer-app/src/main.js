@@ -67,36 +67,60 @@ document.addEventListener('DOMContentLoaded', async () => {
   const appContainer = document.querySelector('.app-container');
   const appWindow = getCurrentWindow();
 
-  // Load and apply saved window position
+  // Check if a window position puts its center on any real monitor
+  function isPositionOnMonitor(x, y, windowWidth, windowHeight, monitors) {
+    const cx = x + windowWidth / 2;
+    const cy = y + windowHeight / 2;
+    return monitors.some(m =>
+      cx >= m.position.x && cx < m.position.x + m.size.width &&
+      cy >= m.position.y && cy < m.position.y + m.size.height
+    );
+  }
+
+  // Center window on a given monitor
+  async function centerOnMonitor(monitor, windowWidth, windowHeight) {
+    const x = monitor.position.x + Math.round((monitor.size.width - windowWidth) / 2);
+    const y = monitor.position.y + Math.round((monitor.size.height - windowHeight) / 2);
+    console.log(`Centering on monitor at (${monitor.position.x}, ${monitor.position.y}): window at (${x}, ${y})`);
+    await appWindow.setPosition({ x, y, type: 'Physical' });
+  }
+
+  // Load and apply saved window position (multi-monitor aware)
   async function loadWindowPosition() {
     try {
-      // Get primary monitor size for bounds checking
-      const monitor = await primaryMonitor();
-      if (!monitor) {
-        console.log('No primary monitor detected');
+      const monitors = await availableMonitors();
+      if (monitors.length === 0) {
+        console.log('No monitors detected');
         return;
       }
 
-      const screenWidth = monitor.size.width;
-      const screenHeight = monitor.size.height;
       const windowSize = await appWindow.innerSize();
       const windowWidth = windowSize.width;
       const windowHeight = windowSize.height;
 
-      console.log(`Screen: ${screenWidth}x${screenHeight}, Window: ${windowWidth}x${windowHeight}`);
-
-      // Get saved position (validated against current screen)
-      const position = await invoke('get_saved_window_position', {
-        screenWidth,
-        screenHeight,
-        windowWidth
+      console.log(`Monitors: ${monitors.length}, Window: ${windowWidth}x${windowHeight}`);
+      monitors.forEach((m, i) => {
+        console.log(`  Monitor ${i}: ${m.size.width}x${m.size.height} at (${m.position.x}, ${m.position.y})`);
       });
+
+      // Get raw saved position from config
+      const position = await invoke('get_raw_window_position');
 
       if (position) {
         const [x, y] = position;
-        console.log(`Restoring window position: (${x}, ${y})`);
-        await appWindow.setPosition({ x, y, type: 'Physical' });
+        if (isPositionOnMonitor(x, y, windowWidth, windowHeight, monitors)) {
+          console.log(`Restoring window position: (${x}, ${y})`);
+          await appWindow.setPosition({ x, y, type: 'Physical' });
+          return;
+        }
+        console.log(`Saved position (${x}, ${y}) is not on any monitor, centering instead`);
       }
+
+      // No valid saved position: center on current monitor, or primary, or first
+      const targetMonitor = await appWindow.currentMonitor()
+        || await primaryMonitor()
+        || monitors[0];
+      await centerOnMonitor(targetMonitor, windowWidth, windowHeight);
     } catch (e) {
       console.error('Failed to load window position:', e);
     }
@@ -226,14 +250,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // State management
   let state = {
-    status: 'idle', // idle, listening, processing, correcting, done, error
+    status: 'idle', // idle, listening, processing, correcting, done, error, reloading
     transcript: '',       // Currently displayed transcript (for backward compat)
     rawTranscript: '',    // Raw Whisper output (before LLM cleanup)
     correctedTranscript: '', // LLM-corrected output
     showCorrected: true,  // Toggle: true = show corrected, false = show raw
     isPartial: false,
     pipelineInitialized: false,
-    isRunning: false
+    isRunning: false,
+    modelsLoaded: true    // Tracks whether models are in memory (false after idle unload)
   };
 
   // Get the transcript to display based on toggle state
@@ -281,13 +306,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Update record button - disabled until initialized, then shows recording state
     if (!state.pipelineInitialized) {
       recordButton.classList.add('disabled');
-      recordButton.classList.remove('recording');
+      recordButton.classList.remove('recording', 'unloaded', 'reloading');
+    } else if (state.status === 'reloading') {
+      recordButton.classList.remove('disabled', 'recording', 'unloaded');
+      recordButton.classList.add('reloading');
     } else if (state.isRunning) {
-      recordButton.classList.remove('disabled');
+      recordButton.classList.remove('disabled', 'unloaded', 'reloading');
       recordButton.classList.add('recording');
+    } else if (!state.modelsLoaded) {
+      recordButton.classList.remove('disabled', 'recording', 'reloading');
+      recordButton.classList.add('unloaded');
     } else {
-      recordButton.classList.remove('disabled');
-      recordButton.classList.remove('recording');
+      recordButton.classList.remove('disabled', 'recording', 'unloaded', 'reloading');
     }
 
     // Update status text
@@ -298,7 +328,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       correcting: 'Correcting...',
       done: 'Done',
       error: 'Error',
-      discarded: 'Discarded'
+      discarded: 'Discarded',
+      reloading: 'Reloading models...'
     };
     // Show "Loading..." during initialization
     if (!state.pipelineInitialized && state.status === 'processing') {
@@ -320,9 +351,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         transcriptText.classList.remove('partial');
       }
     } else {
-      transcriptText.textContent = state.pipelineInitialized
-        ? 'Click record or press Ctrl+Space'
-        : 'Initializing...';
+      if (!state.pipelineInitialized) {
+        transcriptText.textContent = 'Initializing...';
+      } else if (!state.modelsLoaded && state.status === 'idle') {
+        transcriptText.textContent = 'Models unloaded (will reload on use)';
+      } else {
+        transcriptText.textContent = 'Click record or press Ctrl+Space';
+      }
       transcriptText.classList.add('placeholder');
       transcriptText.classList.remove('partial');
     }
@@ -383,6 +418,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     state.status = newState;
     state.isRunning = newState === 'listening' || newState === 'processing' || newState === 'correcting';
+
+    // Models are back in memory once we reach listening state
+    if (newState === 'listening') {
+      state.modelsLoaded = true;
+    }
 
     // Clear transcript on new listening session
     if (newState === 'listening') {
@@ -461,6 +501,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateUI();
   });
 
+  // Listen for models-unloaded event (idle timeout freed memory)
+  await listen('models-unloaded', () => {
+    console.log('Models unloaded due to idle timeout');
+    state.modelsLoaded = false;
+    state.status = 'idle';
+    updateUI();
+  });
+
   // Toggle dictation (shared logic for hotkey and click)
   let lastToggleTime = 0;
   let isToggling = false;
@@ -511,15 +559,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Start dictation (only if not already running)
   async function startDictation() {
-    // Block if not initialized
+    // Block if not initialized (never-initialized, not just unloaded)
     if (!state.pipelineInitialized) {
       console.log('Pipeline not initialized yet, ignoring start');
       return;
     }
 
-    // If already running, don't do anything
-    if (state.isRunning) {
-      console.log('Already recording, ignoring start');
+    // If already running or reloading, don't do anything
+    if (state.isRunning || state.status === 'reloading') {
+      console.log('Already recording or reloading, ignoring start');
       return;
     }
 

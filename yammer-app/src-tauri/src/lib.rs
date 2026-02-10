@@ -146,12 +146,69 @@ pub struct AppState {
     event_tx: mpsc::Sender<PipelineEvent>,
     /// Last successful transcription result for "Copy Last" feature
     last_transcription: Arc<Mutex<Option<String>>>,
+    /// Cached pipeline config for re-initialization after idle unload
+    pipeline_config: Arc<Mutex<Option<PipelineConfig>>>,
+    /// Handle to the idle unload timer (cancellable)
+    idle_timer_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Idle unload timeout in seconds (0 = disabled)
+    idle_unload_seconds: u64,
+}
+
+/// Schedule (or reschedule) the idle unload timer.
+/// Cancels any existing timer, then spawns a new one that will unload models
+/// after `idle_unload_seconds` of inactivity.
+fn schedule_idle_unload(
+    idle_unload_seconds: u64,
+    idle_timer_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pipeline: Arc<Mutex<Option<DictationPipeline>>>,
+    is_running: Arc<Mutex<bool>>,
+    app_handle: AppHandle,
+) {
+    if idle_unload_seconds == 0 {
+        return;
+    }
+
+    let duration = std::time::Duration::from_secs(idle_unload_seconds);
+
+    tokio::spawn(async move {
+        // Cancel any existing timer
+        let mut handle_guard = idle_timer_handle.lock().await;
+        if let Some(existing) = handle_guard.take() {
+            existing.abort();
+        }
+
+        let pipeline_clone = pipeline.clone();
+        let is_running_clone = is_running.clone();
+        let app_handle_clone = app_handle.clone();
+
+        *handle_guard = Some(tokio::spawn(async move {
+            tokio::time::sleep(duration).await;
+
+            // Check if dictation is active - don't unload during use
+            let running = *is_running_clone.lock().await;
+            if running {
+                info!("Idle timer fired but dictation is active, skipping unload");
+                return;
+            }
+
+            // Unload models by dropping the pipeline
+            let mut pipeline_guard = pipeline_clone.lock().await;
+            if pipeline_guard.is_some() {
+                info!("Idle timeout reached ({}s), unloading models to free memory", idle_unload_seconds);
+                *pipeline_guard = None;
+
+                let _ = app_handle_clone.emit("models-unloaded", ());
+                info!("Models unloaded, will reload on next dictation");
+            }
+        }));
+    });
 }
 
 /// Initialize the pipeline with model paths
 #[tauri::command]
 async fn initialize_pipeline(
     state: State<'_, AppState>,
+    app: AppHandle,
     whisper_model: Option<String>,
     llm_model: Option<String>,
     use_correction: bool,
@@ -216,6 +273,9 @@ async fn initialize_pipeline(
         max_recording_seconds: app_config.audio.max_recording_seconds,
     };
 
+    // Cache config for re-initialization after idle unload
+    *state.pipeline_config.lock().await = Some(pipeline_config.clone());
+
     let mut pipeline = DictationPipeline::new(pipeline_config, state.event_tx.clone());
     match pipeline.initialize() {
         Ok(()) => {
@@ -229,6 +289,20 @@ async fn initialize_pipeline(
 
     let mut pipeline_guard = state.pipeline.lock().await;
     *pipeline_guard = Some(pipeline);
+    drop(pipeline_guard);
+
+    // Start idle unload timer
+    let idle_seconds = state.idle_unload_seconds;
+    if idle_seconds > 0 {
+        info!("Idle model unload enabled: {}s timeout", idle_seconds);
+        schedule_idle_unload(
+            idle_seconds,
+            state.idle_timer_handle.clone(),
+            state.pipeline.clone(),
+            state.is_running.clone(),
+            app,
+        );
+    }
 
     Ok(())
 }
@@ -237,12 +311,20 @@ async fn initialize_pipeline(
 #[tauri::command]
 async fn start_dictation(
     state: State<'_, AppState>,
-    _app: AppHandle,
+    app: AppHandle,
 ) -> Result<(), String> {
     info!("Start dictation command received");
 
+    // Cancel any pending idle timer since we're about to use the pipeline
+    {
+        let mut timer_guard = state.idle_timer_handle.lock().await;
+        if let Some(handle) = timer_guard.take() {
+            handle.abort();
+            debug!("Cancelled idle unload timer");
+        }
+    }
+
     // Combined lock acquisition: check/set is_running + verify pipeline + get handles
-    // This reduces 4 separate lock cycles to 2 (is_running + pipeline group)
     {
         // First: atomically check and set is_running
         let mut is_running = state.is_running.lock().await;
@@ -252,7 +334,36 @@ async fn start_dictation(
         }
 
         // Verify pipeline is initialized and get handles (single pipeline lock)
-        let pipeline_guard = state.pipeline.lock().await;
+        let mut pipeline_guard = state.pipeline.lock().await;
+
+        // If pipeline was unloaded (idle timeout), reload from cached config
+        if pipeline_guard.is_none() {
+            let config_guard = state.pipeline_config.lock().await;
+            if let Some(ref cached_config) = *config_guard {
+                info!("Pipeline was unloaded, reloading models...");
+                let _ = app.emit("pipeline-state", "reloading");
+
+                let mut new_pipeline = DictationPipeline::new(
+                    cached_config.clone(),
+                    state.event_tx.clone(),
+                );
+                match new_pipeline.initialize() {
+                    Ok(()) => {
+                        info!("Pipeline reloaded successfully after idle unload");
+                        *pipeline_guard = Some(new_pipeline);
+                    }
+                    Err(e) => {
+                        error!("Failed to reload pipeline: {}", e);
+                        let _ = app.emit("pipeline-state", "error");
+                        return Err(format!("Failed to reload models: {}", e));
+                    }
+                }
+            } else {
+                error!("Pipeline not created yet");
+                return Err("Pipeline not initialized. Call initialize_pipeline first.".to_string());
+            }
+        }
+
         match pipeline_guard.as_ref() {
             Some(p) if p.is_initialized() => {
                 info!("Pipeline is initialized, proceeding with dictation");
@@ -279,12 +390,15 @@ async fn start_dictation(
         }
     }
 
-    // Get pipeline reference for blocking task
+    // Get references for blocking task
     let pipeline_state = state.pipeline.clone();
     let is_running_state = state.is_running.clone();
     let cancel_handle_state = state.cancel_handle.clone();
     let discard_handle_state = state.discard_handle.clone();
     let last_transcription_state = state.last_transcription.clone();
+    let idle_timer_handle = state.idle_timer_handle.clone();
+    let idle_seconds = state.idle_unload_seconds;
+    let app_for_timer = app.clone();
 
     // Run pipeline in blocking task (audio capture isn't Send-safe)
     tokio::task::spawn_blocking(move || {
@@ -318,6 +432,19 @@ async fn start_dictation(
             Err(ref e) => {
                 error!("Dictation failed: {}", e);
             }
+        }
+
+        // Reset idle timer after dictation completes
+        if idle_seconds > 0 {
+            rt.block_on(async {
+                schedule_idle_unload(
+                    idle_seconds,
+                    idle_timer_handle,
+                    pipeline_state.clone(),
+                    is_running_state.clone(),
+                    app_for_timer,
+                );
+            });
         }
     });
 
@@ -463,6 +590,13 @@ async fn get_saved_window_position(
     Ok(config.validated_window_position(screen_width, screen_height, window_width))
 }
 
+/// Get raw saved window position without validation (for multi-monitor JS-side checks)
+#[tauri::command]
+async fn get_raw_window_position() -> Result<Option<(i32, i32)>, String> {
+    let config = Config::load();
+    Ok(config.window_position())
+}
+
 /// Simulate audio waveform data for testing (legacy command, kept for compatibility)
 #[tauri::command]
 fn simulate_audio(app: AppHandle) -> Result<(), String> {
@@ -497,6 +631,8 @@ pub fn run() {
     let (event_tx, mut event_rx) = mpsc::channel::<PipelineEvent>(100);
 
     // Create app state
+    let app_config = Config::load();
+    let idle_unload_seconds = app_config.gui.idle_unload_seconds;
     let last_transcription = Arc::new(Mutex::new(None));
     let app_state = AppState {
         pipeline: Arc::new(Mutex::new(None)),
@@ -505,6 +641,9 @@ pub fn run() {
         discard_handle: Arc::new(Mutex::new(None)),
         event_tx,
         last_transcription: last_transcription.clone(),
+        pipeline_config: Arc::new(Mutex::new(None)),
+        idle_timer_handle: Arc::new(Mutex::new(None)),
+        idle_unload_seconds,
     };
 
     tauri::Builder::default()
@@ -783,6 +922,7 @@ pub fn run() {
             quit_app,
             save_window_position,
             get_saved_window_position,
+            get_raw_window_position,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -802,6 +942,9 @@ mod tests {
             discard_handle: Arc::new(Mutex::new(None)),
             event_tx,
             last_transcription: Arc::new(Mutex::new(None)),
+            pipeline_config: Arc::new(Mutex::new(None)),
+            idle_timer_handle: Arc::new(Mutex::new(None)),
+            idle_unload_seconds: 7200,
         };
 
         // Initial state should be not running
@@ -813,6 +956,12 @@ mod tests {
         assert!(app_state.discard_handle.lock().await.is_none());
         // Last transcription should be None
         assert!(app_state.last_transcription.lock().await.is_none());
+        // Pipeline config should be None (not yet initialized)
+        assert!(app_state.pipeline_config.lock().await.is_none());
+        // Idle timer should be None
+        assert!(app_state.idle_timer_handle.lock().await.is_none());
+        // Idle unload seconds should be set
+        assert_eq!(app_state.idle_unload_seconds, 7200);
     }
 
     #[tokio::test]
@@ -826,6 +975,9 @@ mod tests {
             discard_handle: Arc::new(Mutex::new(None)),
             event_tx,
             last_transcription: Arc::new(Mutex::new(None)),
+            pipeline_config: Arc::new(Mutex::new(None)),
+            idle_timer_handle: Arc::new(Mutex::new(None)),
+            idle_unload_seconds: 7200,
         };
 
         // Simulate setting cancel handle (as start_dictation would)
@@ -857,6 +1009,9 @@ mod tests {
             discard_handle: Arc::new(Mutex::new(None)),
             event_tx,
             last_transcription: Arc::new(Mutex::new(None)),
+            pipeline_config: Arc::new(Mutex::new(None)),
+            idle_timer_handle: Arc::new(Mutex::new(None)),
+            idle_unload_seconds: 7200,
         };
 
         // Start dictation would set is_running to true
@@ -884,6 +1039,9 @@ mod tests {
             discard_handle: Arc::new(Mutex::new(None)),
             event_tx,
             last_transcription: Arc::new(Mutex::new(None)),
+            pipeline_config: Arc::new(Mutex::new(None)),
+            idle_timer_handle: Arc::new(Mutex::new(None)),
+            idle_unload_seconds: 7200,
         };
 
         // Initially no transcription

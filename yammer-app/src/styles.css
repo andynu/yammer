@@ -128,6 +128,27 @@ body {
   fill: #555;
 }
 
+/* Unloaded state - models freed from memory, still clickable */
+.record-btn.unloaded {
+  background: #555;
+  opacity: 0.7;
+}
+
+.record-btn.unloaded:hover {
+  background: #666;
+  opacity: 1;
+}
+
+/* Reloading state - models being loaded back into memory */
+.record-btn.reloading {
+  background: #ffc107;
+  cursor: wait;
+}
+
+.record-btn.reloading .mic-icon {
+  fill: #333;
+}
+
 /* Close button - outside drag region for clickability */
 .close-btn {
   width: 20px;
@@ -194,6 +215,11 @@ body {
 
 .status-indicator.discarded {
   background-color: #9e9e9e;
+}
+
+.status-indicator.reloading {
+  background-color: #ffc107;
+  animation: pulse 0.3s infinite;
 }
 
 @keyframes pulse {
