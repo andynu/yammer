@@ -1,25 +1,29 @@
 //! Text output for yammer dictation app
 //!
-//! Provides methods to inject text into the user's focused application using xdotool.
+//! Provides methods to inject text into the user's focused application.
+//! On Linux, uses xdotool/xclip. On Windows, uses enigo/clipboard-win.
 
-use std::process::Command;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
 /// Errors that can occur during text output
 #[derive(Error, Debug)]
 pub enum OutputError {
+    #[cfg(target_os = "linux")]
     #[error("xdotool not found - install with: sudo apt install xdotool")]
     XdotoolNotFound,
 
-    #[error("Failed to execute xdotool: {0}")]
+    #[error("Failed to execute output command: {0}")]
     ExecutionFailed(#[from] std::io::Error),
 
-    #[error("xdotool returned non-zero exit code: {0}")]
+    #[error("Output command returned non-zero exit code: {0}")]
     NonZeroExit(i32),
 
     #[error("Clipboard operation failed: {0}")]
     ClipboardFailed(String),
+
+    #[error("Text input simulation failed: {0}")]
+    InputSimulationFailed(String),
 }
 
 /// Result type for output operations
@@ -28,7 +32,7 @@ pub type OutputResult<T> = Result<T, OutputError>;
 /// Output method to use for text injection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputMethod {
-    /// Use xdotool type command (simulates keystrokes)
+    /// Simulate keystrokes (xdotool type on Linux, enigo on Windows)
     #[default]
     Type,
     /// Use clipboard + paste (more compatible with some apps)
@@ -73,11 +77,22 @@ impl TextOutput {
         }
     }
 
-    /// Check if xdotool is available
-    pub fn check_xdotool() -> OutputResult<()> {
-        match Command::new("which").arg("xdotool").output() {
-            Ok(output) if output.status.success() => Ok(()),
-            _ => Err(OutputError::XdotoolNotFound),
+    /// Check if the text output backend is available
+    pub fn check_backend() -> OutputResult<()> {
+        #[cfg(target_os = "linux")]
+        {
+            check_xdotool()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // enigo doesn't need an external tool check
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            Err(OutputError::InputSimulationFailed(
+                "Unsupported platform".into(),
+            ))
         }
     }
 
@@ -108,11 +123,12 @@ impl TextOutput {
         }
     }
 
-    /// Type text using xdotool type command
-    ///
-    /// The `--clearmodifiers` flag releases any held keys (like Super from hotkey)
-    /// before typing to prevent modifier interference.
+    // ── Linux implementation ──────────────────────────────────────────
+
+    #[cfg(target_os = "linux")]
     fn type_text(&self, text: &str) -> OutputResult<()> {
+        use std::process::Command;
+
         info!(
             "Typing {} characters via xdotool (delay={}ms)",
             text.len(),
@@ -134,11 +150,10 @@ impl TextOutput {
         }
     }
 
-    /// Paste text via clipboard using xclip + xdotool key
-    ///
-    /// This method is more compatible with some applications (electron apps,
-    /// some terminals) that don't handle simulated keystrokes well.
+    #[cfg(target_os = "linux")]
     fn paste_text(&self, text: &str) -> OutputResult<()> {
+        use std::process::Command;
+
         info!("Pasting {} characters via clipboard", text.len());
 
         // Set clipboard content using xclip
@@ -175,6 +190,89 @@ impl TextOutput {
             warn!("xdotool key failed with exit code {}", code);
             Err(OutputError::NonZeroExit(code))
         }
+    }
+
+    // ── Windows implementation ────────────────────────────────────────
+
+    #[cfg(target_os = "windows")]
+    fn type_text(&self, text: &str) -> OutputResult<()> {
+        use enigo::{Enigo, Keyboard, Settings};
+
+        info!(
+            "Typing {} characters via enigo (delay={}ms)",
+            text.len(),
+            self.typing_delay_ms
+        );
+
+        let mut enigo = Enigo::new(&Settings::default()).map_err(|e| {
+            OutputError::InputSimulationFailed(format!("Failed to create Enigo instance: {}", e))
+        })?;
+
+        if self.typing_delay_ms == 0 {
+            // Type entire string at once for speed
+            enigo.text(text).map_err(|e| {
+                OutputError::InputSimulationFailed(format!("Failed to type text: {}", e))
+            })?;
+        } else {
+            // Type character-by-character with delay
+            let delay = std::time::Duration::from_millis(self.typing_delay_ms as u64);
+            for ch in text.chars() {
+                enigo.text(&ch.to_string()).map_err(|e| {
+                    OutputError::InputSimulationFailed(format!("Failed to type '{}': {}", ch, e))
+                })?;
+                std::thread::sleep(delay);
+            }
+        }
+
+        debug!("enigo type completed successfully");
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn paste_text(&self, text: &str) -> OutputResult<()> {
+        use clipboard_win::{formats, set_clipboard};
+        use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+
+        info!("Pasting {} characters via clipboard", text.len());
+
+        // Set clipboard content
+        set_clipboard(formats::Unicode, text).map_err(|e| {
+            OutputError::ClipboardFailed(format!("Failed to set clipboard: {}", e))
+        })?;
+
+        // Small delay to ensure clipboard is set
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Simulate Ctrl+V to paste
+        let mut enigo = Enigo::new(&Settings::default()).map_err(|e| {
+            OutputError::InputSimulationFailed(format!("Failed to create Enigo instance: {}", e))
+        })?;
+
+        enigo.key(Key::Control, Direction::Press).map_err(|e| {
+            OutputError::InputSimulationFailed(format!("Failed to press Ctrl: {}", e))
+        })?;
+        enigo
+            .key(Key::Unicode('v'), Direction::Click)
+            .map_err(|e| {
+                OutputError::InputSimulationFailed(format!("Failed to press V: {}", e))
+            })?;
+        enigo.key(Key::Control, Direction::Release).map_err(|e| {
+            OutputError::InputSimulationFailed(format!("Failed to release Ctrl: {}", e))
+        })?;
+
+        debug!("Clipboard paste completed successfully");
+        Ok(())
+    }
+}
+
+// ── Linux-only helpers ────────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn check_xdotool() -> OutputResult<()> {
+    use std::process::Command;
+    match Command::new("which").arg("xdotool").output() {
+        Ok(output) if output.status.success() => Ok(()),
+        _ => Err(OutputError::XdotoolNotFound),
     }
 }
 
@@ -236,9 +334,12 @@ mod tests {
 
     #[test]
     fn test_output_error_display() {
-        let err = OutputError::XdotoolNotFound;
-        assert!(err.to_string().contains("xdotool not found"));
-        assert!(err.to_string().contains("sudo apt install xdotool"));
+        #[cfg(target_os = "linux")]
+        {
+            let err = OutputError::XdotoolNotFound;
+            assert!(err.to_string().contains("xdotool not found"));
+            assert!(err.to_string().contains("sudo apt install xdotool"));
+        }
 
         let err = OutputError::NonZeroExit(1);
         assert!(err.to_string().contains("non-zero"));
@@ -247,6 +348,10 @@ mod tests {
         let err = OutputError::ClipboardFailed("test error".into());
         assert!(err.to_string().contains("Clipboard"));
         assert!(err.to_string().contains("test error"));
+
+        let err = OutputError::InputSimulationFailed("sim error".into());
+        assert!(err.to_string().contains("simulation failed"));
+        assert!(err.to_string().contains("sim error"));
     }
 
     #[test]
@@ -352,31 +457,28 @@ mod tests {
     }
 
     #[test]
-    fn test_check_xdotool() {
-        // This test will pass if xdotool is installed
-        let result = TextOutput::check_xdotool();
+    fn test_check_backend() {
+        // This test will pass if the backend is available
+        let result = TextOutput::check_backend();
         // Don't assert - xdotool may not be installed in CI
-        println!("xdotool check result: {:?}", result);
+        println!("backend check result: {:?}", result);
     }
 
-    // Integration tests that require xdotool installed
-    // These are conditionally run based on xdotool availability
+    // Integration tests that require platform tools installed
     #[test]
-    #[ignore] // Run with `cargo test -- --ignored` when xdotool is available
+    #[ignore] // Run with `cargo test -- --ignored` when tools are available
     fn test_type_text_integration() {
-        if TextOutput::check_xdotool().is_ok() {
-            // Type to a non-focused window won't affect anything
+        if TextOutput::check_backend().is_ok() {
             let output = TextOutput::new();
             let result = output.output("test");
-            // May fail if no window focused, but shouldn't panic
             println!("type_text result: {:?}", result);
         }
     }
 
     #[test]
-    #[ignore] // Run with `cargo test -- --ignored` when xclip/xdotool available
+    #[ignore] // Run with `cargo test -- --ignored` when tools are available
     fn test_paste_text_integration() {
-        if TextOutput::check_xdotool().is_ok() {
+        if TextOutput::check_backend().is_ok() {
             let output = TextOutput::with_method(OutputMethod::Clipboard);
             let result = output.output("test");
             println!("paste_text result: {:?}", result);

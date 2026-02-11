@@ -7,3 +7,7 @@ description = "Text output for yammer dictation app"
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+enigo = "0.2"
+clipboard-win = "5"

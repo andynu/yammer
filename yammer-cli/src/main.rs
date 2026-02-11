@@ -1098,8 +1098,8 @@ async fn gpu_info(watch: bool) -> Result<()> {
 }
 
 async fn type_text_cmd(text: String, clipboard: bool, delay: u64) -> Result<()> {
-    // Check xdotool is available
-    TextOutput::check_xdotool()?;
+    // Check text output backend is available
+    TextOutput::check_backend()?;
 
     let method = if clipboard {
         OutputMethod::Clipboard
