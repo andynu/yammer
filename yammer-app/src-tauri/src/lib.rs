@@ -52,8 +52,15 @@ fn spawn_hotkey_listener(app_handle: AppHandle) {
         info!("Starting Ctrl+Super hotkey listener (rdev)");
 
         let mut state = HotkeyState::new();
+        // Grace period: ignore hotkey events during the first few seconds after launch
+        // to prevent false activation from spurious key events during desktop startup
+        let startup_time = std::time::Instant::now();
+        let grace_period = std::time::Duration::from_secs(5);
 
         let callback = move |event: Event| {
+            if startup_time.elapsed() < grace_period {
+                return;
+            }
             match event.event_type {
                 EventType::KeyPress(Key::ControlLeft) | EventType::KeyPress(Key::ControlRight) => {
                     state.ctrl_pressed = true;
@@ -271,6 +278,7 @@ async fn initialize_pipeline(
         vad_threshold: app_config.audio.vad_threshold,
         audio_device: app_config.audio.device.clone(),
         max_recording_seconds: app_config.audio.max_recording_seconds,
+        silence_timeout_seconds: app_config.audio.silence_timeout_seconds,
     };
 
     // Cache config for re-initialization after idle unload

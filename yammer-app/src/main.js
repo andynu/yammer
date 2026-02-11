@@ -440,13 +440,14 @@ document.addEventListener('DOMContentLoaded', async () => {
           state.status = 'idle';
           updateUI();
 
-          // Auto-hide window after successful dictation (unless window has focus)
-          if (newState === 'done') {
+          // Auto-hide window after dictation completes or is discarded
+          // (covers successful dictation, silence timeout, and accidental activation)
+          if (newState === 'done' || newState === 'discarded') {
             const hasFocus = await appWindow.isFocused();
             if (hasFocus) {
               console.log('Window has focus, skipping auto-hide');
             } else {
-              console.log('Auto-hiding window after successful dictation');
+              console.log('Auto-hiding window after dictation');
               await saveCurrentPosition();
               await appWindow.hide();
             }
