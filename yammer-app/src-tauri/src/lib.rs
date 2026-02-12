@@ -58,7 +58,16 @@ fn spawn_hotkey_listener(app_handle: AppHandle, hold_keys: Vec<String>) {
         let mut pressed: HashMap<String, bool> = hold_keys.iter().map(|k| (k.clone(), false)).collect();
         let mut dictation_active = false;
 
+        // Grace period: ignore hotkey events during the first few seconds after launch
+        // to prevent false activation from spurious key events during desktop startup
+        let startup_time = std::time::Instant::now();
+        let grace_period = std::time::Duration::from_secs(5);
+
         let callback = move |event: Event| {
+            if startup_time.elapsed() < grace_period {
+                return;
+            }
+
             let (key, is_press) = match event.event_type {
                 EventType::KeyPress(k) => (k, true),
                 EventType::KeyRelease(k) => (k, false),
@@ -248,6 +257,7 @@ async fn initialize_pipeline(
         vad_threshold: app_config.audio.vad_threshold,
         audio_device: app_config.audio.device.clone(),
         max_recording_seconds: app_config.audio.max_recording_seconds,
+        silence_timeout_seconds: app_config.audio.silence_timeout_seconds,
     };
 
     // Cache config for re-initialization after idle unload
@@ -617,6 +627,8 @@ pub fn run() {
     // Create app state
     let app_config = Config::load();
     let idle_unload_seconds = app_config.gui.idle_unload_seconds;
+    let hold_keys = app_config.hotkey.hold_keys.clone();
+    let hotkey_label = app_config.hotkey.display_name();
     let last_transcription = Arc::new(Mutex::new(None));
     let app_state = AppState {
         pipeline: Arc::new(Mutex::new(None)),
@@ -731,7 +743,7 @@ pub fn run() {
                 .build(),
         )
         .manage(app_state)
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(debug_assertions)]
             {
                 let window = app.get_webview_window("main").expect("Main window not found");
@@ -754,8 +766,6 @@ pub fn run() {
             }
 
             // Spawn the configurable press-hold-release hotkey listener
-            let hold_keys = app_config.hotkey.hold_keys.clone();
-            let hotkey_label = app_config.hotkey.display_name();
             spawn_hotkey_listener(app.handle().clone(), hold_keys);
             info!("Spawned {} press-hold-release hotkey listener", hotkey_label);
 
@@ -766,7 +776,7 @@ pub fn run() {
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &toggle_item, &copy_last_item, &quit_item])?;
 
-            let _tray = TrayIconBuilder::new()
+            let _tray = TrayIconBuilder::with_id("yammer-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)  // Left-click shows window, right-click shows menu

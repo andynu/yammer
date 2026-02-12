@@ -82,6 +82,8 @@ pub struct AudioConfig {
     pub vad_silence_frames: usize,
     /// Maximum recording duration in seconds (0 = no limit, records until toggle)
     pub max_recording_seconds: u32,
+    /// Seconds of continuous silence before auto-stopping recording (0 = disabled)
+    pub silence_timeout_seconds: u32,
 }
 
 impl Default for AudioConfig {
@@ -92,6 +94,7 @@ impl Default for AudioConfig {
             vad_speech_frames: 3,
             vad_silence_frames: 15,
             max_recording_seconds: 0, // 0 = no limit, records until user toggles
+            silence_timeout_seconds: 5,
         }
     }
 }

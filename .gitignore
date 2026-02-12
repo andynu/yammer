@@ -26,6 +26,9 @@ Thumbs.db
 .env
 .env.local
 
+# Frontend dependencies
+node_modules/
+
 # Frontend build output
 yammer-app/dist/
 tags

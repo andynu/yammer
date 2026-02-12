@@ -62,6 +62,8 @@ pub struct PipelineConfig {
     pub audio_device: Option<String>,
     /// Maximum recording duration in seconds (0 = no limit)
     pub max_recording_seconds: u32,
+    /// Seconds of continuous silence before auto-stopping recording (0 = disabled)
+    pub silence_timeout_seconds: u32,
 }
 
 impl Default for PipelineConfig {
@@ -75,6 +77,7 @@ impl Default for PipelineConfig {
             vad_threshold: 0.01,
             audio_device: None,
             max_recording_seconds: 0, // 0 = no limit
+            silence_timeout_seconds: 5,
         }
     }
 }
@@ -375,8 +378,12 @@ impl DictationPipeline {
         let samples = match self.listen_blocking() {
             Ok(s) => s,
             Err(e) => {
-                if e == "No audio recorded" || e == "Discarded" {
-                    self.send_state(PipelineState::Idle);
+                if e == "No audio recorded" {
+                    // Silence timeout or empty recording - signal discarded so
+                    // the frontend can auto-hide the window
+                    self.send_state(PipelineState::Discarded);
+                } else if e == "Discarded" {
+                    self.send_state(PipelineState::Discarded);
                 } else {
                     self.send_error(e.clone());
                     self.send_state(PipelineState::Error);
@@ -495,6 +502,16 @@ impl DictationPipeline {
         // VAD processor (still useful for detecting speech patterns)
         let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
 
+        // Silence timeout tracking
+        let silence_timeout = if self.config.silence_timeout_seconds > 0 {
+            Some(std::time::Duration::from_secs(self.config.silence_timeout_seconds as u64))
+        } else {
+            None
+        };
+        let recording_start = Instant::now();
+        let mut last_speech_time: Option<Instant> = None;
+        let mut ever_had_speech = false;
+
         // Pre-allocate buffer for expected recording duration
         // If no limit, pre-allocate for 60s and let it grow as needed
         let prealloc_seconds = if self.config.max_recording_seconds > 0 {
@@ -548,9 +565,12 @@ impl DictationPipeline {
                 match event {
                     VadEvent::SpeechStart => {
                         debug!("Speech started");
+                        ever_had_speech = true;
+                        last_speech_time = Some(Instant::now());
                     }
                     VadEvent::Speaking => {
                         // Samples already collected above
+                        last_speech_time = Some(Instant::now());
                     }
                     VadEvent::SpeechEnd { samples: _ } => {
                         // In click-to-toggle mode, we don't auto-stop on speech end
@@ -559,6 +579,32 @@ impl DictationPipeline {
                     }
                     VadEvent::Silent => {
                         // Continue recording
+                    }
+                }
+            }
+
+            // Silence timeout: auto-stop after continuous silence
+            if let Some(timeout) = silence_timeout {
+                let silence_duration = if let Some(last_speech) = last_speech_time {
+                    last_speech.elapsed()
+                } else {
+                    recording_start.elapsed()
+                };
+
+                if silence_duration >= timeout {
+                    if ever_had_speech {
+                        info!(
+                            "Silence timeout ({:.1}s) after speech, stopping to process {} samples",
+                            silence_duration.as_secs_f32(),
+                            all_samples.len()
+                        );
+                        return self.maybe_resample(all_samples, input_sample_rate);
+                    } else {
+                        info!(
+                            "Silence timeout ({:.1}s) with no speech detected, discarding",
+                            silence_duration.as_secs_f32()
+                        );
+                        return Err("No audio recorded".to_string());
                     }
                 }
             }
@@ -795,6 +841,7 @@ mod tests {
         assert_eq!(config.typing_delay_ms, 0);
         assert!((config.vad_threshold - 0.01).abs() < f64::EPSILON);
         assert!(config.audio_device.is_none());
+        assert_eq!(config.silence_timeout_seconds, 5);
     }
 
     #[test]
