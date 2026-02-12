@@ -261,6 +261,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     modelsLoaded: true    // Tracks whether models are in memory (false after idle unload)
   };
 
+  // Load hotkey label from config (fallback to default if command fails)
+  let hotkeyLabel = 'Ctrl+Super';
+  try {
+    hotkeyLabel = await invoke('get_hotkey_label');
+  } catch (e) {
+    console.warn('Failed to get hotkey label, using default:', e);
+  }
+
   // Get the transcript to display based on toggle state
   function getVisibleTranscript() {
     // If we have both versions, respect the toggle
@@ -356,7 +364,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else if (!state.modelsLoaded && state.status === 'idle') {
         transcriptText.textContent = 'Models unloaded (will reload on use)';
       } else {
-        transcriptText.textContent = 'Click record or press Ctrl+Space';
+        transcriptText.textContent = `Click record or hold ${hotkeyLabel}`;
       }
       transcriptText.classList.add('placeholder');
       transcriptText.classList.remove('partial');

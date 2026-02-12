@@ -2,6 +2,7 @@
 
 mod pipeline;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -20,112 +21,88 @@ use pipeline::{DictationPipeline, PipelineConfig, PipelineEvent};
 use yammer_core::Config;
 use yammer_output::OutputMethod;
 
-/// State for tracking modifier key presses for press-hold-release hotkey
-struct HotkeyState {
-    ctrl_pressed: bool,
-    super_pressed: bool,
-    dictation_active: bool,
+/// Map a config key name to its rdev Key variants (left and right).
+fn config_key_to_rdev(name: &str) -> Vec<Key> {
+    match name {
+        "Control" => vec![Key::ControlLeft, Key::ControlRight],
+        "Super" => vec![Key::MetaLeft, Key::MetaRight],
+        "Alt" => vec![Key::Alt, Key::AltGr],
+        "Shift" => vec![Key::ShiftLeft, Key::ShiftRight],
+        _ => vec![],
+    }
 }
 
-impl HotkeyState {
-    fn new() -> Self {
-        Self {
-            ctrl_pressed: false,
-            super_pressed: false,
-            dictation_active: false,
+/// Build a lookup from rdev Key -> config group name for the configured hold_keys.
+fn build_key_map(hold_keys: &[String]) -> HashMap<Key, String> {
+    let mut map = HashMap::new();
+    for name in hold_keys {
+        for key in config_key_to_rdev(name) {
+            map.insert(key, name.clone());
         }
     }
-
-    /// Returns true if both Ctrl and Super are currently held
-    fn both_pressed(&self) -> bool {
-        self.ctrl_pressed && self.super_pressed
-    }
+    map
 }
 
-/// Spawns the rdev keyboard listener for Ctrl+Super press-hold-release hotkey.
+/// Spawns the rdev keyboard listener for a configurable press-hold-release hotkey.
 ///
 /// The listener runs in a separate thread and sends events to the app:
-/// - When Ctrl+Super are both pressed: start dictation
-/// - When either is released (after both were pressed): stop dictation
-fn spawn_hotkey_listener(app_handle: AppHandle) {
+/// - When all configured hold_keys are pressed: start dictation
+/// - When any is released (after all were pressed): stop dictation
+fn spawn_hotkey_listener(app_handle: AppHandle, hold_keys: Vec<String>) {
     thread::spawn(move || {
-        info!("Starting Ctrl+Super hotkey listener (rdev)");
+        let label = hold_keys.join("+");
+        info!("Starting hotkey listener (rdev): {}", label);
 
-        let mut state = HotkeyState::new();
+        let key_map = build_key_map(&hold_keys);
+        // Track pressed state per config group name
+        let mut pressed: HashMap<String, bool> = hold_keys.iter().map(|k| (k.clone(), false)).collect();
+        let mut dictation_active = false;
 
         let callback = move |event: Event| {
-            match event.event_type {
-                EventType::KeyPress(Key::ControlLeft) | EventType::KeyPress(Key::ControlRight) => {
-                    state.ctrl_pressed = true;
-                    debug!("Ctrl pressed, super={}", state.super_pressed);
+            let (key, is_press) = match event.event_type {
+                EventType::KeyPress(k) => (k, true),
+                EventType::KeyRelease(k) => (k, false),
+                _ => return,
+            };
 
-                    // Check if both are now pressed and we're not already recording
-                    if state.both_pressed() && !state.dictation_active {
-                        state.dictation_active = true;
-                        info!("Ctrl+Super pressed - starting dictation");
+            // Check if this key belongs to a configured group
+            let group = match key_map.get(&key) {
+                Some(g) => g.clone(),
+                None => return,
+            };
 
-                        // Bring window forward and start dictation
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            let _ = window.unminimize();
-                            let _ = window.show();
-                            let _ = window.set_always_on_top(true);
-                        }
+            if is_press {
+                pressed.insert(group.clone(), true);
+                debug!("{} pressed, state={:?}", group, pressed);
 
-                        if let Err(e) = app_handle.emit("dictation-start", ()) {
-                            error!("Failed to emit dictation-start: {}", e);
-                        }
+                // Check if all groups are now pressed
+                let all_pressed = pressed.values().all(|&v| v);
+                if all_pressed && !dictation_active {
+                    dictation_active = true;
+                    info!("{} pressed - starting dictation", label);
+
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_always_on_top(true);
+                    }
+
+                    if let Err(e) = app_handle.emit("dictation-start", ()) {
+                        error!("Failed to emit dictation-start: {}", e);
                     }
                 }
-                EventType::KeyPress(Key::MetaLeft) | EventType::KeyPress(Key::MetaRight) => {
-                    state.super_pressed = true;
-                    debug!("Super pressed, ctrl={}", state.ctrl_pressed);
+            } else {
+                pressed.insert(group.clone(), false);
+                debug!("{} released, dictation_active={}", group, dictation_active);
 
-                    // Check if both are now pressed and we're not already recording
-                    if state.both_pressed() && !state.dictation_active {
-                        state.dictation_active = true;
-                        info!("Ctrl+Super pressed - starting dictation");
+                if dictation_active {
+                    dictation_active = false;
+                    info!("{} released - stopping dictation", group);
 
-                        // Bring window forward and start dictation
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            let _ = window.unminimize();
-                            let _ = window.show();
-                            let _ = window.set_always_on_top(true);
-                        }
-
-                        if let Err(e) = app_handle.emit("dictation-start", ()) {
-                            error!("Failed to emit dictation-start: {}", e);
-                        }
+                    if let Err(e) = app_handle.emit("dictation-stop", ()) {
+                        error!("Failed to emit dictation-stop: {}", e);
                     }
                 }
-                EventType::KeyRelease(Key::ControlLeft) | EventType::KeyRelease(Key::ControlRight) => {
-                    state.ctrl_pressed = false;
-                    debug!("Ctrl released, dictation_active={}", state.dictation_active);
-
-                    // If dictation was active, stop it when modifier is released
-                    if state.dictation_active {
-                        state.dictation_active = false;
-                        info!("Ctrl released - stopping dictation");
-
-                        if let Err(e) = app_handle.emit("dictation-stop", ()) {
-                            error!("Failed to emit dictation-stop: {}", e);
-                        }
-                    }
-                }
-                EventType::KeyRelease(Key::MetaLeft) | EventType::KeyRelease(Key::MetaRight) => {
-                    state.super_pressed = false;
-                    debug!("Super released, dictation_active={}", state.dictation_active);
-
-                    // If dictation was active, stop it when modifier is released
-                    if state.dictation_active {
-                        state.dictation_active = false;
-                        info!("Super released - stopping dictation");
-
-                        if let Err(e) = app_handle.emit("dictation-stop", ()) {
-                            error!("Failed to emit dictation-stop: {}", e);
-                        }
-                    }
-                }
-                _ => {}
             }
         };
 
@@ -562,6 +539,13 @@ async fn check_models() -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Get the display label for the configured hotkey (e.g. "Ctrl+Super")
+#[tauri::command]
+async fn get_hotkey_label() -> Result<String, String> {
+    let config = Config::load();
+    Ok(config.hotkey.display_name())
+}
+
 /// Quit the application
 #[tauri::command]
 fn quit_app(app: AppHandle) {
@@ -769,9 +753,11 @@ pub fn run() {
                 }
             }
 
-            // Spawn the Ctrl+Super press-hold-release hotkey listener
-            spawn_hotkey_listener(app.handle().clone());
-            info!("Spawned Ctrl+Super press-hold-release hotkey listener");
+            // Spawn the configurable press-hold-release hotkey listener
+            let hold_keys = app_config.hotkey.hold_keys.clone();
+            let hotkey_label = app_config.hotkey.display_name();
+            spawn_hotkey_listener(app.handle().clone(), hold_keys);
+            info!("Spawned {} press-hold-release hotkey listener", hotkey_label);
 
             // Create system tray
             let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
@@ -923,6 +909,7 @@ pub fn run() {
             save_window_position,
             get_saved_window_position,
             get_raw_window_position,
+            get_hotkey_label,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

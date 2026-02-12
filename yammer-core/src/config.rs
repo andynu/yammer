@@ -9,18 +9,33 @@ use tracing::{debug, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HotkeyConfig {
-    /// Key modifiers (Control, Alt, Super, Shift)
-    pub modifiers: Vec<String>,
-    /// The key to press
-    pub key: String,
+    /// Keys to hold simultaneously for dictation (e.g. ["Control", "Super"])
+    /// Valid values: Control, Super, Alt, Shift
+    pub hold_keys: Vec<String>,
 }
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
-            modifiers: vec!["Control".to_string(), "Alt".to_string()],
-            key: "D".to_string(),
+            hold_keys: vec!["Control".to_string(), "Super".to_string()],
         }
+    }
+}
+
+impl HotkeyConfig {
+    /// Returns a human-readable display name for the hotkey combo (e.g. "Ctrl+Super")
+    pub fn display_name(&self) -> String {
+        self.hold_keys
+            .iter()
+            .map(|k| match k.as_str() {
+                "Control" => "Ctrl",
+                "Super" => "Super",
+                "Alt" => "Alt",
+                "Shift" => "Shift",
+                other => other,
+            })
+            .collect::<Vec<_>>()
+            .join("+")
     }
 }
 
@@ -348,8 +363,8 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.hotkey.key, "D");
-        assert_eq!(config.hotkey.modifiers, vec!["Control", "Alt"]);
+        assert_eq!(config.hotkey.hold_keys, vec!["Control", "Super"]);
+        assert_eq!(config.hotkey.display_name(), "Ctrl+Super");
         assert_eq!(config.models.whisper, "base.en");
         assert_eq!(config.audio.vad_threshold, 0.01);
         assert_eq!(config.output.method, "type");
@@ -375,7 +390,7 @@ mod tests {
         let config = Config::default();
         let toml_str = config.to_toml().unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
-        assert_eq!(config.hotkey.key, parsed.hotkey.key);
+        assert_eq!(config.hotkey.hold_keys, parsed.hotkey.hold_keys);
         assert_eq!(config.models.whisper, parsed.models.whisper);
     }
 
