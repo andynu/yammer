@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0] - 2026-02-12
+
+### Added
+- Windows support: text output via enigo (keystroke simulation) and clipboard-win
+  (clipboard paste), with platform-gated implementations for Linux and Windows
+- Configurable hold-to-talk hotkey: set `hotkey.hold_keys` in config.toml to any
+  combination of modifier keys (Control, Super, Alt, Shift). Default: Ctrl+Super
+- GitHub Actions CI for Windows builds alongside Linux
+- Startup grace period (5s) for hotkey listener to prevent false activation from
+  spurious key events during desktop startup
+- Auto-dismiss listening window after 5 seconds of silence
+- Start window hidden on launch to prevent flash of empty window
+
+### Fixed
+- Suppress ALSA/JACK stderr noise on Linux
+- Set explicit tray icon ID to prevent duplicates
+- Always auto-hide window on discard
+
 ## [0.2.0] - 2026-02-10
 
 ### Added
