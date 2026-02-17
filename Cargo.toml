@@ -37,19 +37,10 @@ ringbuf = "0.4"
 rubato = "0.16"
 ctrlc = "3"
 
-# GPU Acceleration Configuration
-# -----------------------------
-# whisper-rs and llama_cpp both bundle ggml with CUDA support. When both enable CUDA,
-# the linker fails with duplicate symbol errors (ggml_cuda_error, etc.) because each
-# library compiles its own copy of ggml-cuda.cu.
-#
-# Current workaround: Enable CUDA only for whisper-rs (STT) since real-time audio
-# transcription benefits most from GPU acceleration. LLM runs on CPU which is
-# acceptable for text cleanup tasks.
-#
-# Future options:
-# - Vulkan backend: Both libraries support vulkan feature (may avoid conflicts)
-# - Separate processes: Run STT and LLM in different processes
-# - Upstream fix: Wait for ggml to be a proper shared dependency
-whisper-rs = { version = "0.14", features = ["cuda"] }
-llama_cpp = { version = "0.3" }  # CPU-only to avoid duplicate CUDA symbols
+# Kyutai STT (candle-based, no duplicate CUDA symbol issues with llama_cpp)
+moshi = { version = "0.6.4" }
+candle-core = { version = "0.9.1", features = ["cuda"] }
+candle-nn = { version = "0.9.1", features = ["cuda"] }
+hf-hub = { version = "0.4.3", features = ["tokio"] }
+sentencepiece = { version = "0.11.3" }
+llama_cpp = { version = "0.3" }

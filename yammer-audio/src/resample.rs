@@ -133,6 +133,23 @@ pub fn resample_to_whisper(samples: &[f32], input_rate: u32) -> Result<Vec<f32>,
         .map_err(|e| format!("Resampling failed: {}", e))
 }
 
+/// Target sample rate for Kyutai STT (moshi/mimi codec)
+pub const KYUTAI_SAMPLE_RATE: u32 = 24_000;
+
+/// Resample a complete buffer of audio to Kyutai's 24kHz format
+pub fn resample_to_kyutai(samples: &[f32], input_rate: u32) -> Result<Vec<f32>, String> {
+    if input_rate == KYUTAI_SAMPLE_RATE {
+        return Ok(samples.to_vec());
+    }
+
+    let mut resampler = AudioResampler::new(input_rate, KYUTAI_SAMPLE_RATE)
+        .map_err(|e| format!("Failed to create resampler: {}", e))?;
+
+    resampler
+        .resample_buffer(samples)
+        .map_err(|e| format!("Resampling failed: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

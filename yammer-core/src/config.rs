@@ -50,10 +50,12 @@ impl HotkeyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelsConfig {
-    /// Directory where models are stored
+    /// Directory where models are stored (legacy, unused by Kyutai STT)
     pub model_dir: PathBuf,
-    /// Whisper model name or path (tiny.en, base.en, small.en, medium.en)
-    pub whisper: String,
+    /// HuggingFace repo ID for the STT model.
+    /// Old configs may use the field name "whisper" — the alias keeps them working.
+    #[serde(alias = "whisper")]
+    pub stt: String,
     /// LLM model name or path, or "none" to disable
     pub llm: String,
 }
@@ -67,7 +69,7 @@ impl Default for ModelsConfig {
 
         Self {
             model_dir,
-            whisper: "base.en".to_string(),
+            stt: "kyutai/stt-1b-en_fr-candle".to_string(),
             llm: "tinyllama-1.1b".to_string(),
         }
     }
@@ -270,26 +272,10 @@ impl Config {
         Ok(())
     }
 
-    /// Get the path to the whisper model
-    pub fn whisper_model_path(&self) -> PathBuf {
-        // Check if it's an absolute path
-        let whisper = &self.models.whisper;
-        let path = PathBuf::from(whisper);
-        if path.is_absolute() && path.exists() {
-            return path;
-        }
-
-        // Try to resolve as a model name
-        let filename = match whisper.as_str() {
-            "tiny.en" | "whisper-tiny.en" => "ggml-tiny.en.bin",
-            "base.en" | "whisper-base.en" => "ggml-base.en.bin",
-            "small.en" | "whisper-small.en" => "ggml-small.en.bin",
-            "medium.en" | "whisper-medium.en" => "ggml-medium.en.bin",
-            "large" | "whisper-large" => "ggml-large.bin",
-            _ => whisper, // Assume it's already a filename
-        };
-
-        self.models.model_dir.join(filename)
+    /// Get the HuggingFace repo ID for the STT model.
+    /// hf-hub manages the local cache path internally.
+    pub fn stt_model_repo(&self) -> String {
+        self.models.stt.clone()
     }
 
     /// Get the path to the LLM model, or None if disabled
@@ -375,16 +361,15 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.hotkey.hold_keys, vec!["Control", "Super"]);
         assert_eq!(config.hotkey.display_name(), "Ctrl+Super");
-        assert_eq!(config.models.whisper, "base.en");
+        assert_eq!(config.models.stt, "kyutai/stt-1b-en_fr-candle");
         assert_eq!(config.audio.vad_threshold, 0.01);
         assert_eq!(config.output.method, "type");
     }
 
     #[test]
-    fn test_whisper_model_path() {
+    fn test_stt_model_repo() {
         let config = Config::default();
-        let path = config.whisper_model_path();
-        assert!(path.to_string_lossy().contains("ggml-base.en.bin"));
+        assert_eq!(config.stt_model_repo(), "kyutai/stt-1b-en_fr-candle");
     }
 
     #[test]
@@ -401,7 +386,18 @@ mod tests {
         let toml_str = config.to_toml().unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
         assert_eq!(config.hotkey.hold_keys, parsed.hotkey.hold_keys);
-        assert_eq!(config.models.whisper, parsed.models.whisper);
+        assert_eq!(config.models.stt, parsed.models.stt);
+    }
+
+    #[test]
+    fn test_stt_alias_deserializes_old_whisper_field() {
+        // Old configs that wrote `whisper = "base.en"` should still load
+        let toml_str = r#"
+[models]
+whisper = "base.en"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.models.stt, "base.en");
     }
 
     #[test]

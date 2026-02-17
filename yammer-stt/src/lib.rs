@@ -1,10 +1,8 @@
-//! yammer-stt: speech-to-text using whisper
+//! yammer-stt: streaming speech-to-text via Kyutai STT (moshi/candle)
 //!
-//! This crate provides whisper-rs integration for transcribing audio.
+//! Uses the kyutai/stt-1b-en_fr-candle model, downloaded automatically from
+//! HuggingFace on first use and cached in ~/.cache/huggingface/.
 
 pub mod transcriber;
 
-pub use transcriber::{
-    load_wav_16k, TranscribeError, TranscribeResult, Transcriber, Transcript, TranscriptSegment,
-    WHISPER_MIN_SAMPLES, WHISPER_SAMPLE_RATE,
-};
+pub use transcriber::{KyutaiTranscriber, KYUTAI_CHUNK_SAMPLES, load_wav_24k};

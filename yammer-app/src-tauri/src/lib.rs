@@ -208,7 +208,7 @@ fn schedule_idle_unload(
 async fn initialize_pipeline(
     state: State<'_, AppState>,
     app: AppHandle,
-    whisper_model: Option<String>,
+    stt_model: Option<String>,
     llm_model: Option<String>,
     use_correction: bool,
 ) -> Result<(), String> {
@@ -218,15 +218,9 @@ async fn initialize_pipeline(
     let app_config = Config::load();
     info!("Loaded config from {:?}", Config::default_path());
 
-    // Determine whisper model path
-    let whisper_path = whisper_model
-        .map(|m| app_config.models.model_dir.join(&m))
-        .unwrap_or_else(|| app_config.whisper_model_path());
-
-    info!("Whisper model path: {:?}", whisper_path);
-    if !whisper_path.exists() {
-        error!("Whisper model not found at {:?}", whisper_path);
-    }
+    // Determine STT model repo
+    let stt_repo = stt_model.unwrap_or_else(|| app_config.stt_model_repo());
+    info!("STT model repo: {}", stt_repo);
 
     // Determine LLM model path if correction enabled
     let llm_path = if use_correction {
@@ -262,7 +256,7 @@ async fn initialize_pipeline(
     }
 
     let pipeline_config = PipelineConfig {
-        whisper_model_path: whisper_path,
+        stt_model_repo: stt_repo,
         llm_model_path: llm_path,
         use_llm_correction: use_correction && app_config.llm_enabled(),
         output_method,
@@ -530,13 +524,8 @@ async fn check_models() -> Result<serde_json::Value, String> {
     info!("Checking model availability...");
     let app_config = Config::load();
 
-    let whisper_path = app_config.whisper_model_path();
-    let whisper_exists = whisper_path.exists();
-    if whisper_exists {
-        info!("Whisper model found: {:?}", whisper_path);
-    } else {
-        error!("Whisper model NOT found: {:?}", whisper_path);
-    }
+    let stt_repo = app_config.stt_model_repo();
+    info!("STT model repo: {}", stt_repo);
 
     let llm_path = app_config.llm_model_path();
     let llm_exists = llm_path.as_ref().is_some_and(|p| p.exists());
@@ -549,10 +538,8 @@ async fn check_models() -> Result<serde_json::Value, String> {
     }
 
     Ok(serde_json::json!({
-        "models_dir": app_config.models.model_dir.to_string_lossy(),
-        "whisper": {
-            "exists": whisper_exists,
-            "path": whisper_path.to_string_lossy()
+        "stt": {
+            "repo": stt_repo,
         },
         "llm": {
             "exists": llm_exists,
@@ -1100,10 +1087,8 @@ mod tests {
 
         // Simulate the expected JSON structure
         let expected_structure = json!({
-            "models_dir": "/some/path",
-            "whisper": {
-                "exists": false,
-                "path": "/some/path/model.bin"
+            "stt": {
+                "repo": "kyutai/stt-1b-en_fr-candle"
             },
             "llm": {
                 "exists": false,
@@ -1113,8 +1098,7 @@ mod tests {
         });
 
         // Verify it has expected keys
-        assert!(expected_structure.get("models_dir").is_some());
-        assert!(expected_structure.get("whisper").is_some());
+        assert!(expected_structure.get("stt").is_some());
         assert!(expected_structure.get("llm").is_some());
     }
 }
