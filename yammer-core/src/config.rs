@@ -10,14 +10,19 @@ use tracing::{debug, info, warn};
 #[serde(default)]
 pub struct HotkeyConfig {
     /// Keys to hold simultaneously for dictation (e.g. ["Control", "Super"])
-    /// Valid values: Control, Super, Alt, Shift
+    /// Valid values: Control, Super, Alt, AltRight, Shift, F1-F12
     pub hold_keys: Vec<String>,
+    /// Single key for toggle mode (press to start, press again to stop)
+    /// Valid values: F1-F12, or None to disable toggle mode
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toggle_key: Option<String>,
 }
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             hold_keys: vec!["Control".to_string(), "Super".to_string()],
+            toggle_key: Some("F6".to_string()),
         }
     }
 }
@@ -31,7 +36,9 @@ impl HotkeyConfig {
                 "Control" => "Ctrl",
                 "Super" => "Super",
                 "Alt" => "Alt",
+                "AltRight" => "Right Alt",
                 "Shift" => "Shift",
+                // Function keys display as-is (F1, F2, etc.)
                 other => other,
             })
             .collect::<Vec<_>>()

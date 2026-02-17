@@ -509,7 +509,6 @@ impl DictationPipeline {
             None
         };
         let recording_start = Instant::now();
-        let mut last_speech_time: Option<Instant> = None;
         let mut ever_had_speech = false;
 
         // Pre-allocate buffer for expected recording duration
@@ -566,11 +565,9 @@ impl DictationPipeline {
                     VadEvent::SpeechStart => {
                         debug!("Speech started");
                         ever_had_speech = true;
-                        last_speech_time = Some(Instant::now());
                     }
                     VadEvent::Speaking => {
                         // Samples already collected above
-                        last_speech_time = Some(Instant::now());
                     }
                     VadEvent::SpeechEnd { samples: _ } => {
                         // In click-to-toggle mode, we don't auto-stop on speech end
@@ -583,23 +580,13 @@ impl DictationPipeline {
                 }
             }
 
-            // Silence timeout: auto-stop after continuous silence
-            if let Some(timeout) = silence_timeout {
-                let silence_duration = if let Some(last_speech) = last_speech_time {
-                    last_speech.elapsed()
-                } else {
-                    recording_start.elapsed()
-                };
-
-                if silence_duration >= timeout {
-                    if ever_had_speech {
-                        info!(
-                            "Silence timeout ({:.1}s) after speech, stopping to process {} samples",
-                            silence_duration.as_secs_f32(),
-                            all_samples.len()
-                        );
-                        return self.maybe_resample(all_samples, input_sample_rate);
-                    } else {
+            // Silence timeout: auto-discard if no speech detected at all.
+            // Once speech has been detected, we let the user pause freely
+            // and only stop when they release the hotkey.
+            if !ever_had_speech {
+                if let Some(timeout) = silence_timeout {
+                    let silence_duration = recording_start.elapsed();
+                    if silence_duration >= timeout {
                         info!(
                             "Silence timeout ({:.1}s) with no speech detected, discarding",
                             silence_duration.as_secs_f32()

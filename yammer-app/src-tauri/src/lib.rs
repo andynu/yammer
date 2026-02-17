@@ -27,7 +27,20 @@ fn config_key_to_rdev(name: &str) -> Vec<Key> {
         "Control" => vec![Key::ControlLeft, Key::ControlRight],
         "Super" => vec![Key::MetaLeft, Key::MetaRight],
         "Alt" => vec![Key::Alt, Key::AltGr],
+        "AltRight" => vec![Key::AltGr],
         "Shift" => vec![Key::ShiftLeft, Key::ShiftRight],
+        "F1" => vec![Key::F1],
+        "F2" => vec![Key::F2],
+        "F3" => vec![Key::F3],
+        "F4" => vec![Key::F4],
+        "F5" => vec![Key::F5],
+        "F6" => vec![Key::F6],
+        "F7" => vec![Key::F7],
+        "F8" => vec![Key::F8],
+        "F9" => vec![Key::F9],
+        "F10" => vec![Key::F10],
+        "F11" => vec![Key::F11],
+        "F12" => vec![Key::F12],
         _ => vec![],
     }
 }
@@ -629,6 +642,21 @@ pub fn run() {
     let idle_unload_seconds = app_config.gui.idle_unload_seconds;
     let hold_keys = app_config.hotkey.hold_keys.clone();
     let hotkey_label = app_config.hotkey.display_name();
+    let toggle_shortcut = app_config.hotkey.toggle_key.as_deref().and_then(|key_name| {
+        let code = match key_name {
+            "F1" => Some(Code::F1), "F2" => Some(Code::F2), "F3" => Some(Code::F3),
+            "F4" => Some(Code::F4), "F5" => Some(Code::F5), "F6" => Some(Code::F6),
+            "F7" => Some(Code::F7), "F8" => Some(Code::F8), "F9" => Some(Code::F9),
+            "F10" => Some(Code::F10), "F11" => Some(Code::F11), "F12" => Some(Code::F12),
+            other => {
+                warn!("Unsupported toggle_key '{}', must be F1-F12", other);
+                None
+            }
+        };
+        code.map(|c| Shortcut::new(None, c))
+    });
+    let toggle_shortcut_for_handler = toggle_shortcut.clone();
+    let toggle_key_name = app_config.hotkey.toggle_key.clone();
     let last_transcription = Arc::new(Mutex::new(None));
     let app_state = AppState {
         pipeline: Arc::new(Mutex::new(None)),
@@ -688,34 +716,35 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, shortcut, event| {
+                .with_handler(move |app, shortcut, event| {
                     // Only trigger on key press, not release
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
 
-                    // Check for our dictation toggle shortcut (Super+H)
-                    let dictate_shortcut =
-                        Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
-                    if shortcut == &dictate_shortcut {
-                        debug!("Dictation hotkey pressed (Super+H)");
+                    // Check for configured toggle shortcut
+                    let is_toggle = toggle_shortcut_for_handler
+                        .as_ref()
+                        .is_some_and(|s| shortcut == s);
+
+                    // Also match legacy Super+H fallback
+                    let legacy_shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
+                    let is_legacy = shortcut == &legacy_shortcut;
+
+                    if is_toggle || is_legacy {
+                        debug!("Dictation toggle hotkey pressed");
 
                         // Check if window was hidden/minimized and bring it forward
                         let was_hidden = if let Some(window) = app.get_webview_window("main") {
-                            // Default to false so we try to show if visibility check fails
                             let was_visible = window.is_visible().unwrap_or(false);
                             let was_minimized = window.is_minimized().unwrap_or(false);
 
                             if !was_visible || was_minimized {
                                 debug!("Window was hidden/minimized, bringing forward");
-                                // Multiple calls to ensure window appears on all window managers:
-                                // 1. Unminimize (in case it was minimized)
                                 let _ = window.unminimize();
-                                // 2. Show (in case it was hidden)
                                 if let Err(e) = window.show() {
                                     error!("Failed to show window: {}", e);
                                 }
-                                // 3. Re-assert always on top to bring to foreground
                                 let _ = window.set_always_on_top(true);
                                 true
                             } else {
@@ -725,9 +754,6 @@ pub fn run() {
                             false
                         };
 
-                        // Emit appropriate event based on visibility state:
-                        // - If window was hidden: start dictation (don't toggle, always start)
-                        // - If window was visible: toggle dictation
                         if was_hidden {
                             debug!("Window was hidden, starting dictation");
                             if let Err(e) = app.emit("dictation-start", ()) {
@@ -750,19 +776,28 @@ pub fn run() {
                 info!("Window created: {:?}", window.label());
             }
 
-            // Register global hotkey: Super+H for dictation toggle (fallback)
-            let dictate_shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
-            match app.global_shortcut().register(dictate_shortcut) {
-                Ok(_) => {
-                    info!("Registered global shortcut: Super+H (fallback toggle)");
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to register global shortcut Super+H: {}. \
+            // Register configured toggle shortcut
+            if let Some(ref shortcut) = toggle_shortcut {
+                let key_name = toggle_key_name.as_deref().unwrap_or("?");
+                match app.global_shortcut().register(shortcut.clone()) {
+                    Ok(_) => info!("Registered toggle shortcut: {}", key_name),
+                    Err(e) => error!(
+                        "Failed to register toggle shortcut {}: {}. \
                          Another application may have grabbed this key.",
-                        e
-                    );
+                        key_name, e
+                    ),
                 }
+            }
+
+            // Register legacy Super+H fallback toggle
+            let legacy_shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
+            match app.global_shortcut().register(legacy_shortcut) {
+                Ok(_) => info!("Registered global shortcut: Super+H (fallback toggle)"),
+                Err(e) => error!(
+                    "Failed to register global shortcut Super+H: {}. \
+                     Another application may have grabbed this key.",
+                    e
+                ),
             }
 
             // Spawn the configurable press-hold-release hotkey listener
