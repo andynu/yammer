@@ -99,7 +99,7 @@ enum Commands {
         #[arg(long)]
         device: Option<String>,
 
-        /// Resample to 16kHz for Whisper compatibility
+        /// Resample to 16kHz mono
         #[arg(long)]
         resample: bool,
     },
@@ -1051,11 +1051,10 @@ async fn gpu_info(watch: bool) -> Result<()> {
 
         // Print model size reference
         println!("Model VRAM estimates:");
-        println!("  Whisper base.en:     ~142 MiB");
-        println!("  Whisper small.en:    ~466 MiB");
-        println!("  LLM TinyLlama Q4_K_M: ~637 MiB");
-        println!("  KV cache (2048 ctx):  ~500-1000 MiB");
-        println!("  CUDA overhead:        ~300-500 MiB");
+        println!("  Kyutai STT 1B:        ~2000 MiB");
+        println!("  LLM TinyLlama Q4_K_M:  ~637 MiB");
+        println!("  KV cache (2048 ctx):   ~500-1000 MiB");
+        println!("  CUDA overhead:         ~300-500 MiB");
 
         Ok(())
     };

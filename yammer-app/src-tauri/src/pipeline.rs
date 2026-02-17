@@ -90,7 +90,7 @@ pub struct DictationPipeline {
     is_cancelled: Arc<AtomicBool>,
     /// If true, cancel completely without processing/outputting
     is_discarded: Arc<AtomicBool>,
-    transcriber: Option<Arc<KyutaiTranscriber>>,
+    transcriber: Option<KyutaiTranscriber>,
     corrector: Option<Arc<Corrector>>,
     event_tx: mpsc::Sender<PipelineEvent>,
     /// Pre-initialized audio capture to reduce keypress-to-listening latency
@@ -120,7 +120,7 @@ impl DictationPipeline {
         let t0 = Instant::now();
         match KyutaiTranscriber::new(&self.config.stt_model_repo) {
             Ok(transcriber) => {
-                self.transcriber = Some(Arc::new(transcriber));
+                self.transcriber = Some(transcriber);
                 info!("STT model loaded in {:.2}s", t0.elapsed().as_secs_f64());
             }
             Err(e) => {
@@ -287,7 +287,7 @@ impl DictationPipeline {
 
     /// Run the complete dictation pipeline (blocking).
     /// Should be called from spawn_blocking.
-    pub fn run_blocking(&self) -> Result<String, String> {
+    pub fn run_blocking(&mut self) -> Result<String, String> {
         info!("Starting dictation pipeline...");
         self.reset_cancel();
 
@@ -351,7 +351,7 @@ impl DictationPipeline {
     /// Audio is captured in chunks, resampled to 24 kHz, fed to Kyutai in
     /// 1920-sample (80 ms) steps, and words are emitted to the UI as they
     /// are recognised — while the user is still speaking.
-    fn listen_and_transcribe_blocking(&self) -> Result<String, String> {
+    fn listen_and_transcribe_blocking(&mut self) -> Result<String, String> {
         self.send_state(PipelineState::Listening);
         info!("Starting audio capture + streaming transcription...");
 
@@ -382,16 +382,6 @@ impl DictationPipeline {
         let _ = capture;
         info!("Audio capture ready: {} Hz", input_sample_rate);
         let mut rx = rx;
-
-        let transcriber = self
-            .transcriber
-            .as_ref()
-            .ok_or("Transcriber not initialized")?;
-
-        // Safety: KyutaiTranscriber needs &mut self for step(), but we hold an Arc.
-        // We are in a single blocking thread and are the only caller of step() for
-        // this session, so this unsafety is sound.
-        let transcriber_ptr = Arc::as_ptr(transcriber) as *mut KyutaiTranscriber;
 
         // VAD for audio level + speech detection
         let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
@@ -424,11 +414,9 @@ impl DictationPipeline {
                     accumulated_words.len()
                 );
                 // Flush remaining carry buffer as one last step
-                Self::flush_carry_buf(
-                    transcriber_ptr,
-                    &mut carry_buf,
-                    &mut accumulated_words,
-                );
+                if let Some(ref mut t) = self.transcriber {
+                    Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
+                }
                 break;
             }
 
@@ -464,8 +452,7 @@ impl DictationPipeline {
             while carry_buf.len() >= KYUTAI_CHUNK_SAMPLES {
                 let slice: Vec<f32> = carry_buf.drain(..KYUTAI_CHUNK_SAMPLES).collect();
 
-                // SAFETY: single blocking thread, Arc not cloned into other threads
-                let words = unsafe { &mut *transcriber_ptr }
+                let words = self.transcriber.as_mut().unwrap()
                     .step(&slice)
                     .map_err(|e| format!("STT step failed: {}", e))?;
 
@@ -484,11 +471,9 @@ impl DictationPipeline {
                 let elapsed = recording_start.elapsed().as_secs() as u32;
                 if elapsed >= max_seconds {
                     warn!("Recording timeout ({}s max)", max_seconds);
-                    Self::flush_carry_buf(
-                        transcriber_ptr,
-                        &mut carry_buf,
-                        &mut accumulated_words,
-                    );
+                    if let Some(ref mut t) = self.transcriber {
+                        Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
+                    }
                     let _ = estimated_seconds; // suppress warning
                     break;
                 }
@@ -512,7 +497,7 @@ impl DictationPipeline {
     /// Pad the carry buffer with zeros and run one final step to flush any
     /// partial word the model is accumulating.
     fn flush_carry_buf(
-        transcriber_ptr: *mut KyutaiTranscriber,
+        transcriber: &mut KyutaiTranscriber,
         carry_buf: &mut Vec<f32>,
         accumulated_words: &mut Vec<String>,
     ) {
@@ -521,8 +506,7 @@ impl DictationPipeline {
         }
         // Pad to a full chunk
         carry_buf.resize(KYUTAI_CHUNK_SAMPLES, 0.0);
-        // SAFETY: same as the call site above
-        if let Ok(words) = unsafe { &mut *transcriber_ptr }.step(carry_buf) {
+        if let Ok(words) = transcriber.step(carry_buf) {
             accumulated_words.extend(words);
         }
         carry_buf.clear();
@@ -687,7 +671,7 @@ mod tests {
     #[test]
     fn test_pipeline_run_without_initialization() {
         let (tx, mut rx) = mpsc::channel(10);
-        let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
+        let mut pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
 
         let result = pipeline.run_blocking();
         assert!(result.is_err());

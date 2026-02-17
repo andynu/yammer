@@ -399,8 +399,8 @@ async fn start_dictation(
         let result = {
             // We need to block on the mutex since we're in a blocking context
             let rt = tokio::runtime::Handle::current();
-            let pipeline_guard = rt.block_on(pipeline_state.lock());
-            if let Some(ref pipeline) = *pipeline_guard {
+            let mut pipeline_guard = rt.block_on(pipeline_state.lock());
+            if let Some(ref mut pipeline) = *pipeline_guard {
                 pipeline.run_blocking()
             } else {
                 Err("Pipeline not available".to_string())
