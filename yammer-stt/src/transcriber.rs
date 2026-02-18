@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
+use candle_nn::Activation;
 use rubato::{FftFixedIn, Resampler};
 use tracing::{debug, info, warn};
 
@@ -11,24 +12,86 @@ pub const KYUTAI_CHUNK_SAMPLES: usize = 1920;
 /// Sample rate expected by the Kyutai/Mimi codec
 const KYUTAI_SAMPLE_RATE: u32 = 24_000;
 
-/// Number of audio codebook streams the model expects
-const MIMI_CODEBOOKS: usize = 32;
-
 /// Temperature for text token sampling (0 = greedy)
 const ASR_TEMPERATURE: f64 = 0.0;
 
-/// Serde-deserialisable subset of the model's config.json
+/// Serde-deserialisable subset of the model's config.json.
+///
+/// LM architecture fields (card, n_q, dim, etc.) are used to construct the
+/// `moshi::lm::Config` dynamically, so we don't rely on hardcoded presets
+/// that may not match the model weights.
 #[derive(serde::Deserialize)]
 struct ModelConfig {
     mimi_name: String,
     tokenizer_name: String,
-    #[serde(default = "default_audio_delay")]
+    #[serde(default)]
     stt_config: SttConfig,
+
+    // LM architecture
+    card: usize,
+    n_q: usize,
+    text_card: usize,
+    dim: usize,
+    num_heads: usize,
+    num_layers: usize,
+    hidden_scale: f64,
+    context: usize,
+    max_period: f64,
+    layer_scale: Option<f64>,
+    #[serde(default)]
+    extra_heads_num_heads: usize,
+    #[serde(default)]
+    extra_heads_dim: usize,
 }
 
-fn default_audio_delay() -> SttConfig {
-    SttConfig {
-        audio_delay_seconds: 0.0,
+impl ModelConfig {
+    fn build_lm_config(&self) -> moshi::lm::Config {
+        let dim_feedforward = (self.dim as f64 * self.hidden_scale).round() as usize;
+
+        let transformer = moshi::transformer::Config {
+            d_model: self.dim,
+            num_heads: self.num_heads,
+            num_layers: self.num_layers,
+            causal: true,
+            norm_first: true,
+            bias_ff: false,
+            bias_attn: false,
+            layer_scale: self.layer_scale,
+            positional_embedding: moshi::transformer::PositionalEmbedding::Rope,
+            use_conv_block: false,
+            cross_attention: None,
+            conv_kernel_size: 3,
+            use_conv_bias: true,
+            gating: Some(Activation::Silu),
+            norm: moshi::NormType::RmsNorm,
+            context: self.context,
+            max_period: self.max_period as usize,
+            max_seq_len: 4096,
+            kv_repeat: 1,
+            dim_feedforward,
+            conv_layout: false,
+            shared_cross_attn: false,
+        };
+
+        let extra_heads = if self.extra_heads_num_heads > 0 {
+            Some(moshi::lm::ExtraHeadsConfig {
+                num_heads: self.extra_heads_num_heads,
+                dim: self.extra_heads_dim,
+            })
+        } else {
+            None
+        };
+
+        moshi::lm::Config {
+            transformer,
+            depformer: None,
+            text_in_vocab_size: self.text_card + 1,
+            text_out_vocab_size: self.text_card,
+            audio_vocab_size: self.card + 1,
+            audio_codebooks: self.n_q,
+            conditioners: Default::default(),
+            extra_heads,
+        }
     }
 }
 
@@ -95,14 +158,30 @@ impl KyutaiTranscriber {
         // Load Mimi audio tokenizer
         let audio_tokenizer = moshi::mimi::load(
             mimi_path.to_str().context("Non-UTF8 mimi path")?,
-            Some(MIMI_CODEBOOKS),
+            Some(config.n_q),
             &device,
         )
         .context("Failed to load Mimi codec")?;
 
-        // Load ASR language model
-        let lm = moshi::lm::load_asr(&model_path, DType::BF16, &device)
-            .context("Failed to load LM model")?;
+        // Build LM config from the model's own config.json
+        let lm_cfg = config.build_lm_config();
+        debug!(
+            "LM config: d_model={}, heads={}, layers={}, ff={}, text_vocab={}, audio_codebooks={}",
+            lm_cfg.transformer.d_model,
+            lm_cfg.transformer.num_heads,
+            lm_cfg.transformer.num_layers,
+            lm_cfg.transformer.dim_feedforward,
+            lm_cfg.text_in_vocab_size,
+            lm_cfg.audio_codebooks,
+        );
+
+        // Load ASR language model with the config derived from config.json
+        info!("Loading LM from {:?} with dtype BF16 on {:?}", model_path, device);
+        let lm = moshi::lm::load_lm_model(lm_cfg, &model_path, DType::BF16, &device)
+            .with_context(|| format!(
+                "Failed to load LM model from {:?} (device={:?})",
+                model_path, device
+            ))?;
 
         // Compute ASR delay in tokens: 12.5 tokens/second from the Mimi codec
         let asr_delay_in_tokens =
