@@ -49,7 +49,7 @@ jobs:
 
       - name: Build Tauri app
         working-directory: yammer-app
-        run: npm run tauri build -- --bundles deb,rpm
+        run: npm run tauri build -- --bundles deb,rpm -- --no-default-features --features custom-protocol
 
       - name: Upload deb artifact
         uses: actions/upload-artifact@v4
@@ -96,7 +96,7 @@ jobs:
         working-directory: yammer-app
         env:
           LIBCLANG_PATH: 'C:\Program Files\LLVM\lib'
-        run: npm run tauri build -- --bundles nsis
+        run: npm run tauri build -- --bundles nsis -- --no-default-features --features custom-protocol
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4

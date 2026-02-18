@@ -8,6 +8,7 @@ name = "yammer"
 path = "src/main.rs"
 
 [features]
+default = ["cuda"]
 cuda = ["yammer-stt/cuda"]
 
 [dependencies]

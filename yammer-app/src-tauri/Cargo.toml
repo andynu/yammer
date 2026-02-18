@@ -40,6 +40,6 @@ tauri-plugin-clipboard-manager = "2"
 rdev = "0.5"
 
 [features]
-default = ["custom-protocol"]
+default = ["custom-protocol", "cuda"]
 custom-protocol = ["tauri/custom-protocol"]
 cuda = ["yammer-stt/cuda"]
