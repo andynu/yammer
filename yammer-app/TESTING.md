@@ -170,7 +170,7 @@ Should complete without errors.
 Once the audio pipeline is wired up, the waveform will receive real audio samples instead of simulated data, and states will transition automatically:
 
 - VAD detection → `listening`
-- Whisper processing → `processing`
+- STT processing → `processing`
 - LLM correction → `correcting`
 - Output ready → `done`
 

@@ -259,7 +259,7 @@ Key design decisions:
 ```rust
 // Pipeline configuration
 pub struct PipelineConfig {
-    pub whisper_model_path: PathBuf,
+    pub stt_model_path: PathBuf,
     pub llm_model_path: Option<PathBuf>,
     pub use_llm_correction: bool,
     pub output_method: OutputMethod,
