@@ -272,10 +272,19 @@ impl Config {
         Ok(())
     }
 
+    /// Default Kyutai STT HuggingFace repo ID.
+    const DEFAULT_STT_REPO: &'static str = "kyutai/stt-1b-en_fr-candle";
+
     /// Get the HuggingFace repo ID for the STT model.
-    /// hf-hub manages the local cache path internally.
+    /// Old Whisper model names (e.g. "base.en") are migrated to the Kyutai default.
     pub fn stt_model_repo(&self) -> String {
-        self.models.stt.clone()
+        let val = &self.models.stt;
+        // Old Whisper configs stored short names like "base.en", "tiny.en", etc.
+        // These aren't valid HF repo IDs — fall back to the Kyutai default.
+        if !val.contains('/') {
+            return Self::DEFAULT_STT_REPO.to_string();
+        }
+        val.clone()
     }
 
     /// Get the path to the LLM model, or None if disabled
@@ -397,7 +406,17 @@ mod tests {
 whisper = "base.en"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
+        // The raw field stores the old value...
         assert_eq!(config.models.stt, "base.en");
+        // ...but stt_model_repo() migrates it to the Kyutai default
+        assert_eq!(config.stt_model_repo(), "kyutai/stt-1b-en_fr-candle");
+    }
+
+    #[test]
+    fn test_stt_model_repo_preserves_valid_hf_repo() {
+        let mut config = Config::default();
+        config.models.stt = "kyutai/stt-2b-en-candle".to_string();
+        assert_eq!(config.stt_model_repo(), "kyutai/stt-2b-en-candle");
     }
 
     #[test]
