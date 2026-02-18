@@ -3,6 +3,9 @@ name = "yammer-stt"
 version.workspace = true
 edition.workspace = true
 
+[features]
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
+
 [dependencies]
 thiserror.workspace = true
 anyhow.workspace = true

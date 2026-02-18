@@ -42,3 +42,4 @@ rdev = "0.5"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+cuda = ["yammer-stt/cuda"]

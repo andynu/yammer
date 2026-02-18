@@ -7,6 +7,9 @@ edition.workspace = true
 name = "yammer"
 path = "src/main.rs"
 
+[features]
+cuda = ["yammer-stt/cuda"]
+
 [dependencies]
 yammer-core = { path = "../yammer-core" }
 yammer-audio = { path = "../yammer-audio" }

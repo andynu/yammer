@@ -39,8 +39,8 @@ ctrlc = "3"
 
 # Kyutai STT (candle-based, no duplicate CUDA symbol issues with llama_cpp)
 moshi = { version = "0.6.4" }
-candle-core = { version = "0.9.1", features = ["cuda"] }
-candle-nn = { version = "0.9.1", features = ["cuda"] }
+candle-core = { version = "0.9.1" }
+candle-nn = { version = "0.9.1" }
 hf-hub = { version = "0.4.3", features = ["tokio"] }
 sentencepiece = { version = "0.11.3" }
 llama_cpp = { version = "0.3" }
