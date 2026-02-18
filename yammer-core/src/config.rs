@@ -10,14 +10,19 @@ use tracing::{debug, info, warn};
 #[serde(default)]
 pub struct HotkeyConfig {
     /// Keys to hold simultaneously for dictation (e.g. ["Control", "Super"])
-    /// Valid values: Control, Super, Alt, Shift
+    /// Valid values: Control, Super, Alt, AltRight, Shift, F1-F12
     pub hold_keys: Vec<String>,
+    /// Single key for toggle mode (press to start, press again to stop)
+    /// Valid values: F1-F12, or None to disable toggle mode
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toggle_key: Option<String>,
 }
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             hold_keys: vec!["Control".to_string(), "Super".to_string()],
+            toggle_key: Some("F6".to_string()),
         }
     }
 }
@@ -31,7 +36,9 @@ impl HotkeyConfig {
                 "Control" => "Ctrl",
                 "Super" => "Super",
                 "Alt" => "Alt",
+                "AltRight" => "Right Alt",
                 "Shift" => "Shift",
+                // Function keys display as-is (F1, F2, etc.)
                 other => other,
             })
             .collect::<Vec<_>>()
@@ -43,10 +50,12 @@ impl HotkeyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelsConfig {
-    /// Directory where models are stored
+    /// Directory where models are stored (legacy, unused by Kyutai STT)
     pub model_dir: PathBuf,
-    /// Whisper model name or path (tiny.en, base.en, small.en, medium.en)
-    pub whisper: String,
+    /// HuggingFace repo ID for the STT model.
+    /// Old configs may use the field name "whisper" — the alias keeps them working.
+    #[serde(alias = "whisper")]
+    pub stt: String,
     /// LLM model name or path, or "none" to disable
     pub llm: String,
 }
@@ -60,7 +69,7 @@ impl Default for ModelsConfig {
 
         Self {
             model_dir,
-            whisper: "base.en".to_string(),
+            stt: "kyutai/stt-1b-en_fr-candle".to_string(),
             llm: "tinyllama-1.1b".to_string(),
         }
     }
@@ -263,26 +272,19 @@ impl Config {
         Ok(())
     }
 
-    /// Get the path to the whisper model
-    pub fn whisper_model_path(&self) -> PathBuf {
-        // Check if it's an absolute path
-        let whisper = &self.models.whisper;
-        let path = PathBuf::from(whisper);
-        if path.is_absolute() && path.exists() {
-            return path;
+    /// Default Kyutai STT HuggingFace repo ID.
+    const DEFAULT_STT_REPO: &'static str = "kyutai/stt-1b-en_fr-candle";
+
+    /// Get the HuggingFace repo ID for the STT model.
+    /// Old Whisper model names (e.g. "base.en") are migrated to the Kyutai default.
+    pub fn stt_model_repo(&self) -> String {
+        let val = &self.models.stt;
+        // Old Whisper configs stored short names like "base.en", "tiny.en", etc.
+        // These aren't valid HF repo IDs — fall back to the Kyutai default.
+        if !val.contains('/') {
+            return Self::DEFAULT_STT_REPO.to_string();
         }
-
-        // Try to resolve as a model name
-        let filename = match whisper.as_str() {
-            "tiny.en" | "whisper-tiny.en" => "ggml-tiny.en.bin",
-            "base.en" | "whisper-base.en" => "ggml-base.en.bin",
-            "small.en" | "whisper-small.en" => "ggml-small.en.bin",
-            "medium.en" | "whisper-medium.en" => "ggml-medium.en.bin",
-            "large" | "whisper-large" => "ggml-large.bin",
-            _ => whisper, // Assume it's already a filename
-        };
-
-        self.models.model_dir.join(filename)
+        val.clone()
     }
 
     /// Get the path to the LLM model, or None if disabled
@@ -368,16 +370,15 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.hotkey.hold_keys, vec!["Control", "Super"]);
         assert_eq!(config.hotkey.display_name(), "Ctrl+Super");
-        assert_eq!(config.models.whisper, "base.en");
+        assert_eq!(config.models.stt, "kyutai/stt-1b-en_fr-candle");
         assert_eq!(config.audio.vad_threshold, 0.01);
         assert_eq!(config.output.method, "type");
     }
 
     #[test]
-    fn test_whisper_model_path() {
+    fn test_stt_model_repo() {
         let config = Config::default();
-        let path = config.whisper_model_path();
-        assert!(path.to_string_lossy().contains("ggml-base.en.bin"));
+        assert_eq!(config.stt_model_repo(), "kyutai/stt-1b-en_fr-candle");
     }
 
     #[test]
@@ -394,7 +395,28 @@ mod tests {
         let toml_str = config.to_toml().unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
         assert_eq!(config.hotkey.hold_keys, parsed.hotkey.hold_keys);
-        assert_eq!(config.models.whisper, parsed.models.whisper);
+        assert_eq!(config.models.stt, parsed.models.stt);
+    }
+
+    #[test]
+    fn test_stt_alias_deserializes_old_whisper_field() {
+        // Old configs that wrote `whisper = "base.en"` should still load
+        let toml_str = r#"
+[models]
+whisper = "base.en"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        // The raw field stores the old value...
+        assert_eq!(config.models.stt, "base.en");
+        // ...but stt_model_repo() migrates it to the Kyutai default
+        assert_eq!(config.stt_model_repo(), "kyutai/stt-1b-en_fr-candle");
+    }
+
+    #[test]
+    fn test_stt_model_repo_preserves_valid_hf_repo() {
+        let mut config = Config::default();
+        config.models.stt = "kyutai/stt-2b-en-candle".to_string();
+        assert_eq!(config.stt_model_repo(), "kyutai/stt-2b-en-candle");
     }
 
     #[test]

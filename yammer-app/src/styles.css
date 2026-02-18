@@ -325,7 +325,7 @@ body {
   fill: #42a5f5;
 }
 
-/* Inactive state - showing raw whisper text */
+/* Inactive state - showing raw STT text */
 .ai-toggle:not(.active) svg {
   fill: #666;
 }

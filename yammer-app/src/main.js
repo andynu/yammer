@@ -250,9 +250,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // State management
   let state = {
-    status: 'idle', // idle, listening, processing, correcting, done, error, reloading
+    status: 'idle', // idle, listening, correcting, done, error, reloading
     transcript: '',       // Currently displayed transcript (for backward compat)
-    rawTranscript: '',    // Raw Whisper output (before LLM cleanup)
+    rawTranscript: '',    // Raw STT output (before LLM cleanup)
     correctedTranscript: '', // LLM-corrected output
     showCorrected: true,  // Toggle: true = show corrected, false = show raw
     isPartial: false,
@@ -379,7 +379,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         aiToggleBtn.title = 'Showing AI cleaned (click for raw)';
       } else {
         aiToggleBtn.classList.remove('active');
-        aiToggleBtn.title = 'Showing raw Whisper (click for cleaned)';
+        aiToggleBtn.title = 'Showing raw STT (click for cleaned)';
       }
     } else {
       aiToggleBtn.classList.remove('visible', 'active');
@@ -478,16 +478,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Listen for transcript updates
   // When LLM correction is enabled:
-  //   - First transcript comes with isPartial=true (raw Whisper output)
-  //   - Second transcript comes with isPartial=false (LLM-corrected)
+  //   - Partial transcripts arrive with isPartial=true (raw STT output, streaming)
+  //   - Final transcript comes with isPartial=false (LLM-corrected)
   // When LLM correction is disabled:
-  //   - Only one transcript with isPartial=false (raw Whisper output)
+  //   - Only one transcript with isPartial=false (raw STT output)
   await listen('transcript', (event) => {
     const { text, isPartial } = event.payload;
     console.log('Transcript:', text, 'isPartial:', isPartial);
 
     if (isPartial) {
-      // This is the raw Whisper output (before LLM correction)
+      // This is the raw STT output (before LLM correction)
       state.rawTranscript = text;
       state.correctedTranscript = ''; // Clear any previous corrected version
     } else {
@@ -655,15 +655,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     const modelStatus = await invoke('check_models');
     console.log('Model status:', modelStatus);
 
-    if (!modelStatus.whisper.exists) {
-      throw new Error(`Whisper model not found at ${modelStatus.whisper.path}. Run: yammer download-models`);
-    }
+    // STT model is auto-downloaded by hf-hub on first use; no existence check needed.
+    console.log('STT model repo:', modelStatus.stt.repo);
 
     // Initialize pipeline
     console.log('Initializing pipeline...');
     await invoke('initialize_pipeline', {
-      whisperModel: null, // Use default
-      llmModel: null, // Use default
+      sttModel: null, // Use default from config
+      llmModel: null, // Use default from config
       useCorrection: modelStatus.llm.exists // Enable if LLM model exists
     });
 

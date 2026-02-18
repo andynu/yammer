@@ -1,27 +1,29 @@
 //! Dictation pipeline - coordinates audio capture, STT, LLM correction, and text output
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use yammer_audio::{AudioCapture, VadProcessor, VadEvent, resample_to_whisper, Vad, WHISPER_SAMPLE_RATE};
+use yammer_audio::{AudioCapture, VadProcessor, VadEvent, resample_to_kyutai, Vad};
 use yammer_output::{TextOutput, OutputMethod};
-use yammer_stt::Transcriber;
+use yammer_stt::{KyutaiTranscriber, KYUTAI_CHUNK_SAMPLES};
 use yammer_llm::Corrector;
 
 /// Pipeline state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipelineState {
+    // Idle and Reloading are used as string values emitted to the frontend
+    // even though they are not explicitly constructed in Rust code paths.
+    #[allow(dead_code)]
     Idle,
     Listening,
-    Processing,
     Correcting,
     Done,
     Error,
     Discarded,
+    #[allow(dead_code)]
     Reloading,
 }
 
@@ -30,7 +32,6 @@ impl PipelineState {
         match self {
             PipelineState::Idle => "idle",
             PipelineState::Listening => "listening",
-            PipelineState::Processing => "processing",
             PipelineState::Correcting => "correcting",
             PipelineState::Done => "done",
             PipelineState::Error => "error",
@@ -52,8 +53,9 @@ pub enum PipelineEvent {
 /// Configuration for the pipeline
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
-    pub whisper_model_path: PathBuf,
-    pub llm_model_path: Option<PathBuf>,
+    /// HuggingFace repo ID for the STT model (e.g. "kyutai/stt-1b-en_fr-candle")
+    pub stt_model_repo: String,
+    pub llm_model_path: Option<std::path::PathBuf>,
     pub use_llm_correction: bool,
     pub output_method: OutputMethod,
     /// Delay between keystrokes in milliseconds (for Type output method)
@@ -69,14 +71,14 @@ pub struct PipelineConfig {
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
-            whisper_model_path: PathBuf::new(),
+            stt_model_repo: "kyutai/stt-1b-en_fr-candle".to_string(),
             llm_model_path: None,
             use_llm_correction: false,
             output_method: OutputMethod::Type,
             typing_delay_ms: 0,
             vad_threshold: 0.01,
             audio_device: None,
-            max_recording_seconds: 0, // 0 = no limit
+            max_recording_seconds: 0,
             silence_timeout_seconds: 5,
         }
     }
@@ -88,7 +90,7 @@ pub struct DictationPipeline {
     is_cancelled: Arc<AtomicBool>,
     /// If true, cancel completely without processing/outputting
     is_discarded: Arc<AtomicBool>,
-    transcriber: Option<Arc<Transcriber>>,
+    transcriber: Option<KyutaiTranscriber>,
     corrector: Option<Arc<Corrector>>,
     event_tx: mpsc::Sender<PipelineEvent>,
     /// Pre-initialized audio capture to reduce keypress-to-listening latency
@@ -112,27 +114,17 @@ impl DictationPipeline {
     /// Initialize the pipeline (load models)
     pub fn initialize(&mut self) -> Result<(), String> {
         info!("Initializing dictation pipeline...");
-        info!("Whisper model: {:?}", self.config.whisper_model_path);
+        info!("STT model repo: {}", self.config.stt_model_repo);
 
-        // Load Whisper model
-        if !self.config.whisper_model_path.exists() {
-            let err = format!(
-                "Whisper model not found: {:?}",
-                self.config.whisper_model_path
-            );
-            error!("{}", err);
-            return Err(err);
-        }
-
-        info!("Loading Whisper model...");
-        let t0 = std::time::Instant::now();
-        match Transcriber::new(&self.config.whisper_model_path) {
+        // Load Kyutai STT model (auto-selects CUDA if available)
+        let t0 = Instant::now();
+        match KyutaiTranscriber::new(&self.config.stt_model_repo) {
             Ok(transcriber) => {
-                self.transcriber = Some(Arc::new(transcriber));
-                info!("Whisper model loaded in {:.2}s", t0.elapsed().as_secs_f64());
+                self.transcriber = Some(transcriber);
+                info!("STT model loaded in {:.2}s", t0.elapsed().as_secs_f64());
             }
             Err(e) => {
-                let err = format!("Failed to load Whisper model: {}", e);
+                let err = format!("Failed to load STT model: {}", e);
                 error!("{}", err);
                 return Err(err);
             }
@@ -145,7 +137,7 @@ impl DictationPipeline {
                     warn!("LLM model not found: {:?}, correction disabled", llm_path);
                 } else {
                     info!("Loading LLM model from {:?}...", llm_path);
-                    let t0 = std::time::Instant::now();
+                    let t0 = Instant::now();
                     match Corrector::new(llm_path) {
                         Ok(corrector) => {
                             self.corrector = Some(Arc::new(corrector));
@@ -211,14 +203,12 @@ impl DictationPipeline {
         self.transcriber.is_some()
     }
 
-    /// Get a handle to the cancel flag that can be used to stop the pipeline
-    /// without needing to hold the pipeline lock
+    /// Get a handle to the cancel flag
     pub fn get_cancel_handle(&self) -> Arc<AtomicBool> {
         self.is_cancelled.clone()
     }
 
-    /// Get a handle to the discard flag that can be used to discard the recording
-    /// without needing to hold the pipeline lock
+    /// Get a handle to the discard flag
     pub fn get_discard_handle(&self) -> Arc<AtomicBool> {
         self.is_discarded.clone()
     }
@@ -241,7 +231,6 @@ impl DictationPipeline {
         let _ = self.event_tx.try_send(PipelineEvent::Error(error));
     }
 
-    /// Reset cancelled and discarded flags
     fn reset_cancel(&self) {
         self.is_cancelled.store(false, Ordering::SeqCst);
         self.is_discarded.store(false, Ordering::SeqCst);
@@ -255,7 +244,6 @@ impl DictationPipeline {
         self.is_discarded.load(Ordering::SeqCst)
     }
 
-    /// Create a new audio capture instance based on config
     fn create_audio_capture(&self) -> Result<AudioCapture, String> {
         if let Some(ref device_name) = self.config.audio_device {
             info!("Using configured audio device: {}", device_name);
@@ -274,8 +262,6 @@ impl DictationPipeline {
         }
     }
 
-    /// Try to start capture on a pre-initialized AudioCapture
-    /// Returns the capture reference, sample rate, handle, and receiver
     fn try_start_capture<'a>(
         &self,
         capture: &'a Option<AudioCapture>,
@@ -299,74 +285,12 @@ impl DictationPipeline {
         Ok((c, sr, h, r))
     }
 
-    /// Run the complete dictation pipeline (blocking)
-    /// This should be called from spawn_blocking
-    ///
-    /// ## Control Flow
-    ///
-    /// ```text
-    ///                          ┌──────────────┐
-    ///                          │ run_blocking │
-    ///                          └──────┬───────┘
-    ///                                 │
-    ///                     ┌───────────┴───────────┐
-    ///                     │    is_initialized?    │
-    ///                     └───────────┬───────────┘
-    ///                            no/  │ \yes
-    ///                     ┌─────────┐ │  ↓
-    ///                     │  Error  │ │ listen_blocking()
-    ///                     └─────────┘ │ ──────────────────
-    ///                                 │    │
-    ///                           ┌─────┴────┴─────┐
-    ///                           │ is_discarded?  │←────────────────┐
-    ///                           └───────┬────────┘                 │
-    ///                              yes/  \no                       │
-    ///                    ┌───────────┐    ↓                        │
-    ///                    │ Discarded │  transcribe_blocking()      │
-    ///                    └───────────┘  ─────────────────────      │
-    ///                                     │                        │
-    ///                               ┌─────┴─────┐                  │
-    ///                               │is_discard?│←─────────────────┤
-    ///                               └─────┬─────┘                  │
-    ///                              yes/    \no                     │
-    ///                    ┌───────────┐     ↓                       │
-    ///                    │ Discarded │  correct_blocking()         │
-    ///                    └───────────┘  (if LLM enabled)           │
-    ///                                     │                        │
-    ///                          ┌──────────┴──────────┐             │
-    ///                          │ correction result?  │             │
-    ///                          └──────────┬──────────┘             │
-    ///                         /    │      │     \                  │
-    ///                      Ok   Cancel  Error  is_discarded?───yes─┘
-    ///                       │      │      │         no
-    ///                       ↓      ↓      ↓          ↓
-    ///                 corrected  text   text    ┌───────────┐
-    ///                       │      │      │     │ Discarded │
-    ///                       └──────┴──────┘     └───────────┘
-    ///                             │
-    ///                     output_blocking()
-    ///                     ─────────────────
-    ///                             │
-    ///                    ┌────────┴────────┐
-    ///                    │ output result?  │
-    ///                    └────────┬────────┘
-    ///                        Ok/  │ \Error
-    ///                  ┌────────┐ │  ┌───────┐
-    ///                  │  Done  │ │  │ Error │
-    ///                  └────────┘ │  └───────┘
-    ///                             ↓
-    ///                     Ok(text) returned
-    /// ```
-    ///
-    /// Key behaviors:
-    /// - **cancel flag**: Stops listening phase only; transcription/correction proceed
-    /// - **discard flag**: Aborts at any stage, no text output
-    /// - **correction errors**: Fall back to uncorrected text (graceful degradation)
-    pub fn run_blocking(&self) -> Result<String, String> {
+    /// Run the complete dictation pipeline (blocking).
+    /// Should be called from spawn_blocking.
+    pub fn run_blocking(&mut self) -> Result<String, String> {
         info!("Starting dictation pipeline...");
         self.reset_cancel();
 
-        // Check initialized
         if !self.is_initialized() {
             let err = "Pipeline not initialized".to_string();
             self.send_error(err.clone());
@@ -374,42 +298,12 @@ impl DictationPipeline {
             return Err(err);
         }
 
-        // 1. Listen for speech (cancel flag is used to stop listening)
-        let samples = match self.listen_blocking() {
-            Ok(s) => s,
-            Err(e) => {
-                if e == "No audio recorded" {
-                    // Silence timeout or empty recording - signal discarded so
-                    // the frontend can auto-hide the window
-                    self.send_state(PipelineState::Discarded);
-                } else if e == "Discarded" {
-                    self.send_state(PipelineState::Discarded);
-                } else {
-                    self.send_error(e.clone());
-                    self.send_state(PipelineState::Error);
-                }
-                return Err(e);
-            }
-        };
-
-        // Check if discarded after listening - skip all processing
-        if self.is_discarded() {
-            info!("Recording discarded by user");
-            self.send_state(PipelineState::Discarded);
-            return Err("Discarded".to_string());
-        }
-
-        // Reset cancel flag - user clicked stop to END listening, not to cancel processing
-        // We have audio samples, so proceed with transcription and correction
-        // Note: we do NOT reset is_discarded - it can be set at any time
-        self.is_cancelled.store(false, Ordering::SeqCst);
-
-        // 2. Transcribe
-        let text = match self.transcribe_blocking(&samples) {
+        // 1. Listen + transcribe concurrently (Kyutai streams words as user speaks)
+        let text = match self.listen_and_transcribe_blocking() {
             Ok(t) => t,
             Err(e) => {
-                if e == "Cancelled" || e == "Discarded" {
-                    self.send_state(PipelineState::Idle);
+                if e == "No audio recorded" || e == "Discarded" {
+                    self.send_state(PipelineState::Discarded);
                 } else {
                     self.send_error(e.clone());
                     self.send_state(PipelineState::Error);
@@ -418,43 +312,30 @@ impl DictationPipeline {
             }
         };
 
-        // Check if discarded after transcription - skip output
-        if self.is_discarded() {
-            info!("Recording discarded by user after transcription");
-            self.send_state(PipelineState::Discarded);
-            return Err("Discarded".to_string());
-        }
-
-        // 3. Correct (optional)
+        // 2. Correct (optional LLM pass)
         let corrected = match self.correct_blocking(&text) {
             Ok(t) => t,
             Err(e) if e == "Cancelled" => {
-                // Check for discard during correction
                 if self.is_discarded() {
-                    info!("Recording discarded by user during correction");
                     self.send_state(PipelineState::Discarded);
                     return Err("Discarded".to_string());
                 }
-                // Output uncorrected text on cancel during correction
                 self.output_blocking(&text)?;
                 return Ok(text);
             }
             Err(e) => {
-                // On correction error, output uncorrected text
                 warn!("Correction failed, outputting uncorrected: {}", e);
                 self.output_blocking(&text)?;
                 return Ok(text);
             }
         };
 
-        // Final check before output
         if self.is_discarded() {
-            info!("Recording discarded by user before output");
             self.send_state(PipelineState::Discarded);
             return Err("Discarded".to_string());
         }
 
-        // 4. Output text
+        // 3. Output text
         match self.output_blocking(&corrected) {
             Ok(()) => Ok(corrected),
             Err(e) => {
@@ -465,18 +346,21 @@ impl DictationPipeline {
         }
     }
 
-    /// Listen for audio (blocking version)
-    fn listen_blocking(&self) -> Result<Vec<f32>, String> {
+    /// Listen and transcribe concurrently.
+    ///
+    /// Audio is captured in chunks, resampled to 24 kHz, fed to Kyutai in
+    /// 1920-sample (80 ms) steps, and words are emitted to the UI as they
+    /// are recognised — while the user is still speaking.
+    fn listen_and_transcribe_blocking(&mut self) -> Result<String, String> {
         self.send_state(PipelineState::Listening);
-        info!("Starting audio capture...");
+        info!("Starting audio capture + streaming transcription...");
 
-        // Try to use pre-initialized capture, falling back to on-demand creation
+        // Set up audio capture
         let fallback_capture: Option<AudioCapture>;
         let (capture, input_sample_rate, _handle, rx) =
             match self.try_start_capture(&self.audio_capture) {
                 Ok((c, sr, h, r)) => (c, sr, h, r),
                 Err(pre_init_err) => {
-                    // Pre-initialized capture failed (device disconnected?), try fresh init
                     warn!(
                         "Pre-initialized capture failed: {}, attempting fresh initialization",
                         pre_init_err
@@ -495,11 +379,11 @@ impl DictationPipeline {
                 }
             };
 
-        let _ = capture; // Silence unused warning (we just need to keep fallback_capture alive)
+        let _ = capture;
         info!("Audio capture ready: {} Hz", input_sample_rate);
         let mut rx = rx;
 
-        // VAD processor (still useful for detecting speech patterns)
+        // VAD for audio level + speech detection
         let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
 
         // Silence timeout tracking
@@ -509,203 +393,123 @@ impl DictationPipeline {
             None
         };
         let recording_start = Instant::now();
-        let mut last_speech_time: Option<Instant> = None;
         let mut ever_had_speech = false;
 
-        // Pre-allocate buffer for expected recording duration
-        // If no limit, pre-allocate for 60s and let it grow as needed
-        let prealloc_seconds = if self.config.max_recording_seconds > 0 {
-            self.config.max_recording_seconds as usize
-        } else {
-            60 // Default pre-allocation when no limit
-        };
-        let prealloc_samples = input_sample_rate as usize * prealloc_seconds;
-        let mut all_samples: Vec<f32> = Vec::with_capacity(prealloc_samples);
+        // Carry buffer: accumulates resampled 24 kHz samples between chunks
+        let mut carry_buf: Vec<f32> = Vec::with_capacity(KYUTAI_CHUNK_SAMPLES * 4);
 
-        // Process audio chunks in a blocking loop
-        // Note: We use blocking_recv since we're in spawn_blocking
-        // For click-to-toggle mode: collect ALL audio, not just VAD-detected speech
+        // Accumulated words from STT
+        let mut accumulated_words: Vec<String> = Vec::new();
+
         while let Some(chunk) = rx.blocking_recv() {
-            // Always collect samples while listening (for click-to-toggle mode)
-            all_samples.extend_from_slice(&chunk);
-
-            // Check for discard (user wants to cancel completely)
+            // Check discard/cancel before doing any work
             if self.is_discarded() {
-                info!("Recording discarded by user during listening");
+                info!("Recording discarded during listen+transcribe");
                 return Err("Discarded".to_string());
             }
 
-            // Check for cancellation (user clicked stop to process audio)
             if self.is_cancelled() {
-                info!("Listening stopped by user, {} samples collected", all_samples.len());
-
-                if all_samples.is_empty() {
-                    warn!("No audio recorded");
-                    return Err("No audio recorded".to_string());
-                }
-
-                // Process whatever we have
                 info!(
-                    "Processing {} samples ({:.2}s) at {} Hz",
-                    all_samples.len(),
-                    all_samples.len() as f32 / input_sample_rate as f32,
-                    input_sample_rate
+                    "Listening stopped by user, {} accumulated words",
+                    accumulated_words.len()
                 );
-                return self.maybe_resample(all_samples, input_sample_rate);
+                // Flush remaining carry buffer as one last step
+                if let Some(ref mut t) = self.transcriber {
+                    Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
+                }
+                break;
             }
 
-            // Calculate audio level for visualization
+            // Audio level for the waveform visualisation (on raw device-rate samples)
             let rms = Vad::calculate_rms(&chunk);
             self.send_audio_level(rms);
 
-            // Process through VAD (still useful for detecting natural speech end)
+            // VAD for speech detection
             let events = vad.process(&chunk);
-
-            for event in events {
-                match event {
-                    VadEvent::SpeechStart => {
-                        debug!("Speech started");
-                        ever_had_speech = true;
-                        last_speech_time = Some(Instant::now());
-                    }
-                    VadEvent::Speaking => {
-                        // Samples already collected above
-                        last_speech_time = Some(Instant::now());
-                    }
-                    VadEvent::SpeechEnd { samples: _ } => {
-                        // In click-to-toggle mode, we don't auto-stop on speech end
-                        // User controls when to stop via the button
-                        debug!("VAD detected speech end (continuing recording)");
-                    }
-                    VadEvent::Silent => {
-                        // Continue recording
-                    }
+            for event in &events {
+                if matches!(event, VadEvent::SpeechStart) {
+                    debug!("Speech started");
+                    ever_had_speech = true;
                 }
             }
 
-            // Silence timeout: auto-stop after continuous silence
-            if let Some(timeout) = silence_timeout {
-                let silence_duration = if let Some(last_speech) = last_speech_time {
-                    last_speech.elapsed()
-                } else {
-                    recording_start.elapsed()
-                };
-
-                if silence_duration >= timeout {
-                    if ever_had_speech {
-                        info!(
-                            "Silence timeout ({:.1}s) after speech, stopping to process {} samples",
-                            silence_duration.as_secs_f32(),
-                            all_samples.len()
-                        );
-                        return self.maybe_resample(all_samples, input_sample_rate);
-                    } else {
-                        info!(
-                            "Silence timeout ({:.1}s) with no speech detected, discarding",
-                            silence_duration.as_secs_f32()
-                        );
+            // Silence timeout: discard if no speech detected at all within the timeout
+            if !ever_had_speech {
+                if let Some(timeout) = silence_timeout {
+                    if recording_start.elapsed() >= timeout {
+                        info!("Silence timeout with no speech detected, discarding");
                         return Err("No audio recorded".to_string());
                     }
                 }
             }
 
-            // Safety timeout: if recording for too long, stop (0 = no limit)
+            // Resample to 24 kHz and extend carry buffer
+            let chunk_24k = resample_to_kyutai(&chunk, input_sample_rate)
+                .map_err(|e| format!("Resampling failed: {}", e))?;
+            carry_buf.extend_from_slice(&chunk_24k);
+
+            // Drain carry buffer in 1920-sample steps
+            while carry_buf.len() >= KYUTAI_CHUNK_SAMPLES {
+                let slice: Vec<f32> = carry_buf.drain(..KYUTAI_CHUNK_SAMPLES).collect();
+
+                let words = self.transcriber.as_mut().unwrap()
+                    .step(&slice)
+                    .map_err(|e| format!("STT step failed: {}", e))?;
+
+                if !words.is_empty() {
+                    accumulated_words.extend(words);
+                    let partial_text = accumulated_words.join(" ");
+                    debug!("Partial transcript: {:?}", partial_text);
+                    self.send_transcript(partial_text, true);
+                }
+            }
+
+            // Safety max-duration timeout
             let max_seconds = self.config.max_recording_seconds;
-            if max_seconds > 0 && all_samples.len() > input_sample_rate as usize * max_seconds as usize {
-                warn!("Recording timeout ({}s max)", max_seconds);
-
-                info!(
-                    "Processing {} samples ({:.2}s) at {} Hz",
-                    all_samples.len(),
-                    all_samples.len() as f32 / input_sample_rate as f32,
-                    input_sample_rate
-                );
-
-                return self.maybe_resample(all_samples, input_sample_rate);
+            if max_seconds > 0 {
+                let estimated_seconds = accumulated_words.len() as f32 * 0.4; // rough estimate
+                let elapsed = recording_start.elapsed().as_secs() as u32;
+                if elapsed >= max_seconds {
+                    warn!("Recording timeout ({}s max)", max_seconds);
+                    if let Some(ref mut t) = self.transcriber {
+                        Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
+                    }
+                    let _ = estimated_seconds; // suppress warning
+                    break;
+                }
             }
         }
 
-        // Channel closed - process whatever we have
-        if !all_samples.is_empty() {
-            info!(
-                "Audio capture ended, processing {} samples ({:.2}s)",
-                all_samples.len(),
-                all_samples.len() as f32 / input_sample_rate as f32
-            );
-            self.maybe_resample(all_samples, input_sample_rate)
-        } else {
-            warn!("Audio capture ended with no samples");
-            Err("No audio recorded".to_string())
+        let final_text = accumulated_words.join(" ");
+
+        if final_text.trim().is_empty() {
+            warn!("No speech recognised");
+            return Err("No audio recorded".to_string());
         }
+
+        info!("Transcription complete: {:?}", final_text);
+        // Send final transcript (partial=true if LLM correction will follow)
+        self.send_transcript(final_text.clone(), self.corrector.is_some());
+
+        Ok(final_text)
     }
 
-    fn maybe_resample(&self, samples: Vec<f32>, input_rate: u32) -> Result<Vec<f32>, String> {
-        if input_rate != WHISPER_SAMPLE_RATE {
-            info!("Resampling from {} Hz to {} Hz", input_rate, WHISPER_SAMPLE_RATE);
-            resample_to_whisper(&samples, input_rate).map_err(|e| {
-                let err = format!("Resampling failed: {}", e);
-                error!("{}", err);
-                err
-            })
-        } else {
-            Ok(samples)
+    /// Pad the carry buffer with zeros and run one final step to flush any
+    /// partial word the model is accumulating.
+    fn flush_carry_buf(
+        transcriber: &mut KyutaiTranscriber,
+        carry_buf: &mut Vec<f32>,
+        accumulated_words: &mut Vec<String>,
+    ) {
+        if carry_buf.is_empty() {
+            return;
         }
-    }
-
-    /// Transcribe audio samples (blocking)
-    fn transcribe_blocking(&self, samples: &[f32]) -> Result<String, String> {
-        self.send_state(PipelineState::Processing);
-
-        if self.is_cancelled() {
-            return Err("Cancelled".to_string());
+        // Pad to a full chunk
+        carry_buf.resize(KYUTAI_CHUNK_SAMPLES, 0.0);
+        if let Ok(words) = transcriber.step(carry_buf) {
+            accumulated_words.extend(words);
         }
-
-        let transcriber = self
-            .transcriber
-            .as_ref()
-            .ok_or("Transcriber not initialized")?;
-
-        info!(
-            "Transcribing {} samples ({:.2}s)",
-            samples.len(),
-            samples.len() as f32 / WHISPER_SAMPLE_RATE as f32
-        );
-
-        let start = Instant::now();
-
-        // Clone event sender for the streaming callback
-        let event_tx = self.event_tx.clone();
-
-        // Use streaming transcription to show partial results
-        let transcript = match transcriber.transcribe_streaming(samples, move |partial_text| {
-            // Send each segment as a partial transcript
-            debug!("Partial transcript: \"{}\"", partial_text);
-            let _ = event_tx.try_send(PipelineEvent::Transcript {
-                text: partial_text.to_string(),
-                is_partial: true,
-            });
-        }) {
-            Ok(t) => t,
-            Err(e) => {
-                let err = format!("Transcription failed: {}", e);
-                error!("{}", err);
-                return Err(err);
-            }
-        };
-
-        let text = transcript.text();
-        let elapsed = start.elapsed();
-
-        info!(
-            "Transcription complete in {:.2}s: \"{}\"",
-            elapsed.as_secs_f32(),
-            text
-        );
-
-        // Send final transcript (partial if LLM correction is pending)
-        self.send_transcript(text.clone(), self.corrector.is_some());
-
-        Ok(text)
+        carry_buf.clear();
     }
 
     /// Correct text using LLM (blocking)
@@ -722,7 +526,7 @@ impl DictationPipeline {
 
         let corrector = self.corrector.as_ref().unwrap();
 
-        info!("Correcting text: \"{}\"", text);
+        info!("Correcting text: {:?}", text);
 
         let start = Instant::now();
 
@@ -735,51 +539,26 @@ impl DictationPipeline {
             }
         };
 
-        let elapsed = start.elapsed();
         info!(
-            "Correction complete in {:.2}s: \"{}\"",
-            elapsed.as_secs_f32(),
+            "Correction complete in {:.2}s: {:?}",
+            start.elapsed().as_secs_f32(),
             result.text
         );
 
-        // Send final result
         self.send_transcript(result.text.clone(), false);
 
         Ok(result.text)
     }
 
-    /// Check if text contains only Whisper special tokens (not real speech)
-    fn is_special_token_only(text: &str) -> bool {
-        let trimmed = text.trim();
-        // Common Whisper special tokens that indicate non-speech
-        let special_patterns = [
-            "[BLANK_AUDIO]",
-            "[MUSIC]",
-            "[INAUDIBLE]",
-            "(music)",
-            "(inaudible)",
-            "(silence)",
-            "[SILENCE]",
-        ];
-        special_patterns.iter().any(|&p| trimmed.eq_ignore_ascii_case(p))
-    }
-
     /// Output text (blocking)
     fn output_blocking(&self, text: &str) -> Result<(), String> {
-        if text.is_empty() {
+        if text.trim().is_empty() {
             warn!("Empty text, nothing to output");
             self.send_state(PipelineState::Done);
             return Ok(());
         }
 
-        // Skip Whisper special tokens
-        if Self::is_special_token_only(text) {
-            warn!("Skipping special token: \"{}\"", text);
-            self.send_state(PipelineState::Done);
-            return Ok(());
-        }
-
-        info!("Outputting text: \"{}\"", text);
+        info!("Outputting text: {:?}", text);
 
         let output = TextOutput::with_options(
             self.config.output_method,
@@ -798,18 +577,11 @@ impl DictationPipeline {
         }
 
         self.send_state(PipelineState::Done);
-
         Ok(())
     }
 }
 
 // Compile-time assertion that DictationPipeline is Send + Sync.
-// All fields implement these traits:
-// - PipelineConfig: Contains PathBuf, Option<PathBuf>, bool, OutputMethod, f64, Option<String> (all Send+Sync)
-// - Arc<AtomicBool>: Send+Sync
-// - Option<Arc<Transcriber>>: WhisperContext implements Send+Sync (verified in whisper-rs 0.14.4)
-// - Option<Arc<Corrector>>: LlamaModel implements Send+Sync (verified in llama_cpp 0.3.2)
-// - tokio::sync::mpsc::Sender: Send+Sync
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<DictationPipeline>();
@@ -823,7 +595,6 @@ mod tests {
     fn test_pipeline_state_as_str() {
         assert_eq!(PipelineState::Idle.as_str(), "idle");
         assert_eq!(PipelineState::Listening.as_str(), "listening");
-        assert_eq!(PipelineState::Processing.as_str(), "processing");
         assert_eq!(PipelineState::Correcting.as_str(), "correcting");
         assert_eq!(PipelineState::Done.as_str(), "done");
         assert_eq!(PipelineState::Error.as_str(), "error");
@@ -834,7 +605,7 @@ mod tests {
     #[test]
     fn test_pipeline_config_default() {
         let config = PipelineConfig::default();
-        assert!(config.whisper_model_path.as_os_str().is_empty());
+        assert_eq!(config.stt_model_repo, "kyutai/stt-1b-en_fr-candle");
         assert!(config.llm_model_path.is_none());
         assert!(!config.use_llm_correction);
         assert_eq!(config.output_method, OutputMethod::Type);
@@ -845,37 +616,9 @@ mod tests {
     }
 
     #[test]
-    fn test_is_special_token_only() {
-        // These should be recognized as special tokens
-        assert!(DictationPipeline::is_special_token_only("[BLANK_AUDIO]"));
-        assert!(DictationPipeline::is_special_token_only("[MUSIC]"));
-        assert!(DictationPipeline::is_special_token_only("[INAUDIBLE]"));
-        assert!(DictationPipeline::is_special_token_only("(music)"));
-        assert!(DictationPipeline::is_special_token_only("(inaudible)"));
-        assert!(DictationPipeline::is_special_token_only("(silence)"));
-        assert!(DictationPipeline::is_special_token_only("[SILENCE]"));
-
-        // Case insensitive
-        assert!(DictationPipeline::is_special_token_only("[blank_audio]"));
-        assert!(DictationPipeline::is_special_token_only("[Blank_Audio]"));
-        assert!(DictationPipeline::is_special_token_only("(MUSIC)"));
-
-        // With whitespace
-        assert!(DictationPipeline::is_special_token_only("  [BLANK_AUDIO]  "));
-        assert!(DictationPipeline::is_special_token_only("\n[MUSIC]\n"));
-
-        // These should NOT be special tokens
-        assert!(!DictationPipeline::is_special_token_only("Hello world"));
-        assert!(!DictationPipeline::is_special_token_only(""));
-        assert!(!DictationPipeline::is_special_token_only("The [MUSIC] was great"));
-        assert!(!DictationPipeline::is_special_token_only("[UNKNOWN]"));
-    }
-
-    #[test]
     fn test_pipeline_not_initialized() {
         let (tx, _rx) = mpsc::channel(10);
         let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
-
         assert!(!pipeline.is_initialized());
     }
 
@@ -885,15 +628,11 @@ mod tests {
         let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
 
         let cancel_handle = pipeline.get_cancel_handle();
-
-        // Initially not cancelled
         assert!(!pipeline.is_cancelled());
 
-        // Set cancel via handle
         cancel_handle.store(true, Ordering::SeqCst);
         assert!(pipeline.is_cancelled());
 
-        // Reset
         pipeline.reset_cancel();
         assert!(!pipeline.is_cancelled());
     }
@@ -904,15 +643,11 @@ mod tests {
         let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
 
         let discard_handle = pipeline.get_discard_handle();
-
-        // Initially not discarded
         assert!(!pipeline.is_discarded());
 
-        // Set discard via handle
         discard_handle.store(true, Ordering::SeqCst);
         assert!(pipeline.is_discarded());
 
-        // Reset (reset_cancel also resets discard)
         pipeline.reset_cancel();
         assert!(!pipeline.is_discarded());
     }
@@ -922,10 +657,8 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(10);
         let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
 
-        // Send state
         pipeline.send_state(PipelineState::Listening);
 
-        // Verify event received
         let event = rx.try_recv().expect("Should receive event");
         match event {
             PipelineEvent::StateChanged(state) => {
@@ -938,14 +671,12 @@ mod tests {
     #[test]
     fn test_pipeline_run_without_initialization() {
         let (tx, mut rx) = mpsc::channel(10);
-        let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
+        let mut pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
 
-        // Running without initialization should fail
         let result = pipeline.run_blocking();
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Pipeline not initialized");
 
-        // Should have sent error event
         let mut found_error_state = false;
         while let Ok(event) = rx.try_recv() {
             if let PipelineEvent::StateChanged(PipelineState::Error) = event {
@@ -953,21 +684,5 @@ mod tests {
             }
         }
         assert!(found_error_state);
-    }
-
-    #[test]
-    fn test_pipeline_initialize_missing_model() {
-        let (tx, _rx) = mpsc::channel(10);
-        let mut pipeline = DictationPipeline::new(
-            PipelineConfig {
-                whisper_model_path: "/nonexistent/model.bin".into(),
-                ..Default::default()
-            },
-            tx,
-        );
-
-        let result = pipeline.initialize();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
     }
 }

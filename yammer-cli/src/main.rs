@@ -10,14 +10,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use yammer_audio::{AudioCapture, resample_to_whisper, write_wav, Vad, VadEvent, VadProcessor, WHISPER_SAMPLE_RATE};
+use yammer_audio::{AudioCapture, resample_to_kyutai, resample_to_whisper, write_wav, Vad, VadEvent, VadProcessor, WHISPER_SAMPLE_RATE};
 use yammer_core::{
     format_bytes, get_default_models, get_model_registry, Config, DownloadManager, ModelStatus,
     ModelType, VerifiedHashes,
 };
 use yammer_llm::Corrector;
 use yammer_output::{TextOutput, OutputMethod};
-use yammer_stt::Transcriber;
+use yammer_stt::{KyutaiTranscriber, load_wav_24k};
 
 /// Action to perform for config command
 enum ConfigAction {
@@ -99,7 +99,7 @@ enum Commands {
         #[arg(long)]
         device: Option<String>,
 
-        /// Resample to 16kHz for Whisper compatibility
+        /// Resample to 16kHz mono
         #[arg(long)]
         resample: bool,
     },
@@ -119,25 +119,25 @@ enum Commands {
         device: Option<String>,
     },
 
-    /// Transcribe a WAV file using Whisper
+    /// Transcribe a WAV file using Kyutai STT
     Transcribe {
-        /// Path to WAV file (must be 16kHz mono)
+        /// Path to WAV file (any sample rate; will be resampled to 24 kHz)
         file: PathBuf,
 
-        /// Path to Whisper model file (auto-detected from downloaded models if not specified)
+        /// HuggingFace repo for the STT model (default: from config)
         #[arg(long)]
-        model: Option<PathBuf>,
+        model: Option<String>,
 
-        /// Show timestamps
+        /// Show timestamps (currently ignored for Kyutai STT)
         #[arg(long, short)]
         timestamps: bool,
     },
 
     /// Live dictation: speak and see text appear in real-time
     Dictate {
-        /// Path to Whisper model file (auto-detected from downloaded models if not specified)
+        /// HuggingFace repo for the STT model (default: from config)
         #[arg(long)]
-        model: Option<PathBuf>,
+        model: Option<String>,
 
         /// VAD threshold (RMS level, default 0.01)
         #[arg(long, default_value = "0.01")]
@@ -717,26 +717,20 @@ async fn vad_test(threshold: f32, duration_secs: u64, device: Option<String>) ->
     Ok(())
 }
 
-async fn transcribe_file(file: PathBuf, model_path: Option<PathBuf>, timestamps: bool) -> Result<()> {
-    let model = match model_path {
-        Some(path) => path,
-        None => find_downloaded_model(ModelType::Whisper, false).await?,
-    };
+async fn transcribe_file(file: PathBuf, model_repo: Option<String>, _timestamps: bool) -> Result<()> {
+    let config = yammer_core::Config::load();
+    let repo = model_repo.unwrap_or_else(|| config.stt_model_repo());
 
-    println!("Loading Whisper model...");
-    let transcriber = Transcriber::new(&model)?;
+    println!("Loading Kyutai STT model ({})...", repo);
+    let mut transcriber = KyutaiTranscriber::new(&repo)?;
 
-    println!("Transcribing {:?}...\n", file);
-    let transcript = transcriber.transcribe_file(&file)?;
+    println!("Loading audio from {:?}...", file);
+    let samples = load_wav_24k(&file)?;
 
-    if timestamps {
-        for segment in &transcript.segments {
-            println!("{}", segment);
-        }
-    } else {
-        println!("{}", transcript.text());
-    }
+    println!("Transcribing {} samples ({:.1}s)...\n", samples.len(), samples.len() as f32 / 24000.0);
+    let text = transcriber.transcribe_buffer(&samples)?;
 
+    println!("{}", text);
     Ok(())
 }
 
@@ -811,18 +805,16 @@ fn print_transcript(text: &str) {
 }
 
 async fn dictate(
-    model_path: Option<PathBuf>,
+    model_repo: Option<String>,
     threshold: f32,
     device: Option<String>,
     duration_secs: u64,
 ) -> Result<()> {
-    let model = match model_path {
-        Some(path) => path,
-        None => find_downloaded_model(ModelType::Whisper, true).await?,
-    };
+    let config = yammer_core::Config::load();
+    let repo = model_repo.unwrap_or_else(|| config.stt_model_repo());
 
-    eprintln!("Loading Whisper model...");
-    let transcriber = Arc::new(Transcriber::new(&model)?);
+    eprintln!("Loading Kyutai STT model ({})...", repo);
+    let transcriber = Arc::new(std::sync::Mutex::new(KyutaiTranscriber::new(&repo)?));
 
     // Set up audio capture
     let capture = if let Some(ref device_name) = device {
@@ -915,29 +907,24 @@ async fn dictate(
                     continue;
                 }
 
-                // Resample to 16kHz if needed
-                let samples_16k = if native_rate != WHISPER_SAMPLE_RATE {
-                    match resample_to_whisper(&samples, native_rate) {
-                        Ok(resampled) => resampled,
-                        Err(e) => {
-                            eprintln!("\r\x1b[KResample error: {}", e);
-                            current_state = DictateState::Listening;
-                            continue;
-                        }
+                // Resample to 24 kHz for Kyutai
+                let samples_24k = match resample_to_kyutai(&samples, native_rate) {
+                    Ok(resampled) => resampled,
+                    Err(e) => {
+                        eprintln!("\r\x1b[KResample error: {}", e);
+                        current_state = DictateState::Listening;
+                        continue;
                     }
-                } else {
-                    samples
                 };
 
-                // Transcribe in a blocking task (whisper-rs is synchronous)
+                // Transcribe via batch API
                 let transcriber_clone = transcriber.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    transcriber_clone.transcribe(&samples_16k)
+                    transcriber_clone.lock().unwrap().transcribe_buffer(&samples_24k)
                 }).await?;
 
                 match result {
-                    Ok(transcript) => {
-                        let text = transcript.text();
+                    Ok(text) => {
                         if !text.trim().is_empty() {
                             print_transcript(text.trim());
                         }
@@ -1064,11 +1051,10 @@ async fn gpu_info(watch: bool) -> Result<()> {
 
         // Print model size reference
         println!("Model VRAM estimates:");
-        println!("  Whisper base.en:     ~142 MiB");
-        println!("  Whisper small.en:    ~466 MiB");
-        println!("  LLM TinyLlama Q4_K_M: ~637 MiB");
-        println!("  KV cache (2048 ctx):  ~500-1000 MiB");
-        println!("  CUDA overhead:        ~300-500 MiB");
+        println!("  Kyutai STT 1B:        ~2000 MiB");
+        println!("  LLM TinyLlama Q4_K_M:  ~637 MiB");
+        println!("  KV cache (2048 ctx):   ~500-1000 MiB");
+        println!("  CUDA overhead:         ~300-500 MiB");
 
         Ok(())
     };

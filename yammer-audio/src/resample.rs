@@ -1,4 +1,4 @@
-//! Audio resampling for Whisper compatibility (16kHz mono)
+//! Audio resampling for STT engines (16kHz Whisper, 24kHz Kyutai)
 
 use rubato::{FftFixedIn, Resampler};
 use tracing::debug;
@@ -133,6 +133,23 @@ pub fn resample_to_whisper(samples: &[f32], input_rate: u32) -> Result<Vec<f32>,
         .map_err(|e| format!("Resampling failed: {}", e))
 }
 
+/// Target sample rate for Kyutai STT (moshi/mimi codec)
+pub const KYUTAI_SAMPLE_RATE: u32 = 24_000;
+
+/// Resample a complete buffer of audio to Kyutai's 24kHz format
+pub fn resample_to_kyutai(samples: &[f32], input_rate: u32) -> Result<Vec<f32>, String> {
+    if input_rate == KYUTAI_SAMPLE_RATE {
+        return Ok(samples.to_vec());
+    }
+
+    let mut resampler = AudioResampler::new(input_rate, KYUTAI_SAMPLE_RATE)
+        .map_err(|e| format!("Failed to create resampler: {}", e))?;
+
+    resampler
+        .resample_buffer(samples)
+        .map_err(|e| format!("Resampling failed: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +208,64 @@ mod tests {
     fn test_no_resample_16k() {
         let input: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4, 0.5];
         let output = resample_to_whisper(&input, 16000).unwrap();
+        assert_eq!(input, output);
+    }
+
+    #[test]
+    fn test_resample_48k_to_24k() {
+        let input_rate = 48000;
+        let duration_secs = 1.0;
+        let samples = (input_rate as f32 * duration_secs) as usize;
+
+        let input: Vec<f32> = (0..samples)
+            .map(|i| {
+                let t = i as f32 / input_rate as f32;
+                (2.0 * std::f32::consts::PI * 440.0 * t).sin()
+            })
+            .collect();
+
+        let output = resample_to_kyutai(&input, input_rate).unwrap();
+
+        // Output should be half the size (24k/48k)
+        let expected_samples = (KYUTAI_SAMPLE_RATE as f32 * duration_secs) as usize;
+        assert!(
+            (output.len() as i32 - expected_samples as i32).abs() < 100,
+            "Expected ~{} samples, got {}",
+            expected_samples,
+            output.len()
+        );
+    }
+
+    #[test]
+    fn test_resample_44100_to_24k() {
+        let input_rate = 44100;
+        let duration_secs = 0.5;
+        let samples = (input_rate as f32 * duration_secs) as usize;
+
+        let input: Vec<f32> = (0..samples)
+            .map(|i| {
+                let t = i as f32 / input_rate as f32;
+                (2.0 * std::f32::consts::PI * 1000.0 * t).sin()
+            })
+            .collect();
+
+        let output = resample_to_kyutai(&input, input_rate).unwrap();
+
+        // Tolerance is wider here because chunk-based resampling zero-pads the
+        // last chunk, and the 44100→24000 ratio doesn't divide evenly.
+        let expected_samples = (KYUTAI_SAMPLE_RATE as f32 * duration_secs) as usize;
+        assert!(
+            (output.len() as i32 - expected_samples as i32).abs() < 200,
+            "Expected ~{} samples, got {}",
+            expected_samples,
+            output.len()
+        );
+    }
+
+    #[test]
+    fn test_no_resample_24k() {
+        let input: Vec<f32> = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        let output = resample_to_kyutai(&input, 24000).unwrap();
         assert_eq!(input, output);
     }
 }
