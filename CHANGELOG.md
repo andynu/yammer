@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0] - 2026-02-17
+
+### Changed
+- **Replace Whisper with Kyutai streaming STT**: Speech-to-text now uses Kyutai's
+  Moshi-based streaming pipeline instead of batch Whisper inference. Audio is
+  processed as a continuous stream, reducing latency for real-time transcription.
+- Build language model config dynamically from HuggingFace `config.json` instead
+  of hardcoded Moshi preset
+- Migrate existing Whisper model name settings to Kyutai defaults automatically
+- Simplify pipeline by removing unsafe raw pointer usage
+
+### Fixed
+- Frontend crash when checking model status (updated JSON shape for Kyutai backend)
+
+### Added
+- Resampling unit tests for Kyutai audio input requirements
+
 ## [0.3.0] - 2026-02-12
 
 ### Added

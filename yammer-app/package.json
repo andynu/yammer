@@ -1,6 +1,6 @@
 {
   "name": "yammer-app",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Linux dictation app - local speech-to-text with LLM correction",
   "private": true,
   "scripts": {
