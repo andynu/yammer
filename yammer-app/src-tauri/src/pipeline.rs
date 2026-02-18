@@ -6,7 +6,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use yammer_audio::{AudioCapture, VadProcessor, VadEvent, resample_to_kyutai, Vad};
+use yammer_audio::{AudioCapture, VadProcessor, resample_to_kyutai, Vad};
 use yammer_output::{TextOutput, OutputMethod};
 use yammer_stt::{KyutaiTranscriber, KYUTAI_CHUNK_SAMPLES};
 use yammer_llm::Corrector;
@@ -401,7 +401,6 @@ impl DictationPipeline {
             None
         };
         let recording_start = Instant::now();
-        let mut ever_had_speech = false;
 
         // Carry buffer: accumulates resampled 24 kHz samples between chunks
         let mut carry_buf: Vec<f32> = Vec::with_capacity(KYUTAI_CHUNK_SAMPLES * 4);
@@ -418,9 +417,23 @@ impl DictationPipeline {
 
             if self.is_cancelled() {
                 info!(
-                    "Listening stopped by user, {} accumulated words",
+                    "Listening stopped by user, draining remaining audio ({} words so far)",
                     accumulated_words.len()
                 );
+                // Drain any buffered audio chunks so we don't lose the last word
+                while let Ok(chunk) = rx.try_recv() {
+                    let chunk_24k = resample_to_kyutai(&chunk, input_sample_rate)
+                        .map_err(|e| format!("Resampling failed: {}", e))?;
+                    carry_buf.extend_from_slice(&chunk_24k);
+                    while carry_buf.len() >= KYUTAI_CHUNK_SAMPLES {
+                        let slice: Vec<f32> = carry_buf.drain(..KYUTAI_CHUNK_SAMPLES).collect();
+                        if let Some(ref mut t) = self.transcriber {
+                            if let Ok(words) = t.step(&slice) {
+                                accumulated_words.extend(words);
+                            }
+                        }
+                    }
+                }
                 // Flush remaining carry buffer as one last step
                 if let Some(ref mut t) = self.transcriber {
                     Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
@@ -432,20 +445,17 @@ impl DictationPipeline {
             let rms = Vad::calculate_rms(&chunk);
             self.send_audio_level(rms);
 
-            // VAD for speech detection
-            let events = vad.process(&chunk);
-            for event in &events {
-                if matches!(event, VadEvent::SpeechStart) {
-                    debug!("Speech started");
-                    ever_had_speech = true;
-                }
-            }
+            // VAD for speech detection (used for waveform UI, not timeout gating)
+            let _events = vad.process(&chunk);
 
-            // Silence timeout: discard if no speech detected at all within the timeout
-            if !ever_had_speech {
+            // Silence timeout: discard if no words transcribed within the timeout.
+            // Uses STT output (not VAD) so it won't misfire when the mic is active
+            // but VAD thresholds don't trigger. Once any word is transcribed, the
+            // timeout is permanently disabled for this session.
+            if accumulated_words.is_empty() {
                 if let Some(timeout) = silence_timeout {
                     if recording_start.elapsed() >= timeout {
-                        info!("Silence timeout with no speech detected, discarding");
+                        info!("Silence timeout with no words transcribed, discarding");
                         return Err("No audio recorded".to_string());
                     }
                 }
