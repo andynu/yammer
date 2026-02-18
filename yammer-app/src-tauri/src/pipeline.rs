@@ -95,6 +95,8 @@ pub struct DictationPipeline {
     event_tx: mpsc::Sender<PipelineEvent>,
     /// Pre-initialized audio capture to reduce keypress-to-listening latency
     audio_capture: Option<AudioCapture>,
+    /// Window ID to refocus before text output (captured at activation time)
+    target_window: Option<String>,
 }
 
 impl DictationPipeline {
@@ -108,7 +110,13 @@ impl DictationPipeline {
             corrector: None,
             event_tx,
             audio_capture: None,
+            target_window: None,
         }
+    }
+
+    /// Set the target window to refocus before text output
+    pub fn set_target_window(&mut self, window_id: Option<String>) {
+        self.target_window = window_id;
     }
 
     /// Initialize the pipeline (load models)
@@ -563,7 +571,8 @@ impl DictationPipeline {
         let output = TextOutput::with_options(
             self.config.output_method,
             self.config.typing_delay_ms,
-        );
+        )
+        .with_target_window(self.target_window.clone());
 
         match output.output(text) {
             Ok(()) => {
