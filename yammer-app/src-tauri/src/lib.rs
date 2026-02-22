@@ -15,17 +15,22 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use tauri_plugin_single_instance;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
+#[cfg(not(target_os = "macos"))]
 use rdev::{listen, Event, EventType, Key};
 
 use pipeline::{DictationPipeline, PipelineConfig, PipelineEvent};
 use yammer_core::Config;
 use yammer_output::OutputMethod;
 
+// ── Linux/Windows: rdev-based hotkey listener ────────────────────────
+
+#[cfg(not(target_os = "macos"))]
 /// Map a config key name to its rdev Key variants (left and right).
 fn config_key_to_rdev(name: &str) -> Vec<Key> {
     match name {
         "Control" => vec![Key::ControlLeft, Key::ControlRight],
         "Super" => vec![Key::MetaLeft, Key::MetaRight],
+        "RightSuper" => vec![Key::MetaRight],
         "Alt" => vec![Key::Alt, Key::AltGr],
         "AltRight" => vec![Key::AltGr],
         "Shift" => vec![Key::ShiftLeft, Key::ShiftRight],
@@ -45,6 +50,7 @@ fn config_key_to_rdev(name: &str) -> Vec<Key> {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Build a lookup from rdev Key -> config group name for the configured hold_keys.
 fn build_key_map(hold_keys: &[String]) -> HashMap<Key, String> {
     let mut map = HashMap::new();
@@ -56,6 +62,7 @@ fn build_key_map(hold_keys: &[String]) -> HashMap<Key, String> {
     map
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Spawns the rdev keyboard listener for a configurable press-hold-release hotkey.
 ///
 /// The listener runs in a separate thread and sends events to the app:
@@ -130,6 +137,339 @@ fn spawn_hotkey_listener(app_handle: AppHandle, hold_keys: Vec<String>) {
 
         if let Err(error) = listen(callback) {
             error!("Hotkey listener error: {:?}", error);
+        }
+    });
+}
+
+// ── macOS: native CGEventTap hotkey listener ─────────────────────────
+//
+// rdev's macOS listener calls TSMGetInputSourceProperty to convert key
+// codes into character strings. That API must run on the main dispatch
+// queue, but rdev runs its CFRunLoop on a background thread, causing a
+// fatal dispatch_assert_queue_fail on modern macOS.
+//
+// We only need physical key identity (Ctrl, Cmd, F-keys) for the hotkey,
+// so we create a CGEventTap directly and map virtual key codes without
+// ever touching TSM.
+
+#[cfg(target_os = "macos")]
+mod macos_hotkey {
+    use std::os::raw::c_void;
+
+    // Core Graphics / Core Foundation FFI types
+    type CGEventRef = *mut c_void;
+    type CGEventTapProxy = *mut c_void;
+    type CFMachPortRef = *mut c_void;
+    type CFRunLoopSourceRef = *mut c_void;
+    type CFRunLoopRef = *mut c_void;
+    type CFStringRef = *const c_void;
+    type CGEventMask = u64;
+    type CGEventFlags = u64;
+
+    // CGEventType values
+    const CG_EVENT_KEY_DOWN: u32 = 10;
+    const CG_EVENT_KEY_UP: u32 = 11;
+    const CG_EVENT_FLAGS_CHANGED: u32 = 12;
+    // Sent when the tap is throttled (too slow) — we must re-enable it
+    const CG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFFFFFE;
+
+    // CGEventFlags modifier masks
+    const CG_EVENT_FLAG_CONTROL: CGEventFlags = 0x00040000;
+    const CG_EVENT_FLAG_SHIFT: CGEventFlags = 0x00020000;
+    const CG_EVENT_FLAG_ALTERNATE: CGEventFlags = 0x00080000;
+    const CG_EVENT_FLAG_COMMAND: CGEventFlags = 0x00100000;
+
+    // CGEventTap creation constants
+    const K_CG_HID_EVENT_TAP: u32 = 0;
+    const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
+    const K_CG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
+
+    // CGEventField for keycode
+    const K_CG_KEYBOARD_EVENT_KEYCODE: u32 = 9;
+
+    // macOS virtual key codes
+    const VK_CONTROL_LEFT: u16 = 0x3B;
+    const VK_CONTROL_RIGHT: u16 = 0x3E;
+    const VK_COMMAND_LEFT: u16 = 0x37;
+    const VK_COMMAND_RIGHT: u16 = 0x36;
+    const VK_OPTION_LEFT: u16 = 0x3A;
+    const VK_OPTION_RIGHT: u16 = 0x3D;
+    const VK_SHIFT_LEFT: u16 = 0x38;
+    const VK_SHIFT_RIGHT: u16 = 0x3C;
+    const VK_F1: u16 = 0x7A;
+    const VK_F2: u16 = 0x78;
+    const VK_F3: u16 = 0x63;
+    const VK_F4: u16 = 0x76;
+    const VK_F5: u16 = 0x60;
+    const VK_F6: u16 = 0x61;
+    const VK_F7: u16 = 0x62;
+    const VK_F8: u16 = 0x64;
+    const VK_F9: u16 = 0x65;
+    const VK_F10: u16 = 0x6D;
+    const VK_F11: u16 = 0x67;
+    const VK_F12: u16 = 0x6F;
+
+    type CGEventTapCallBack = unsafe extern "C" fn(
+        proxy: CGEventTapProxy,
+        event_type: u32,
+        event: CGEventRef,
+        user_info: *mut c_void,
+    ) -> CGEventRef;
+
+    extern "C" {
+        fn CGEventTapCreate(
+            tap: u32,
+            place: u32,
+            options: u32,
+            events_of_interest: CGEventMask,
+            callback: CGEventTapCallBack,
+            user_info: *mut c_void,
+        ) -> CFMachPortRef;
+        fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
+        fn CGEventGetFlags(event: CGEventRef) -> CGEventFlags;
+        fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+        fn CFMachPortCreateRunLoopSource(
+            allocator: *const c_void,
+            port: CFMachPortRef,
+            order: i64,
+        ) -> CFRunLoopSourceRef;
+        fn CFRunLoopGetCurrent() -> CFRunLoopRef;
+        fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
+        fn CFRunLoopRun();
+        fn CFRelease(cf: *const c_void);
+        static kCFRunLoopCommonModes: CFStringRef;
+        fn AXIsProcessTrusted() -> bool;
+    }
+
+    /// Map a macOS virtual key code to the config key name.
+    /// Right Command returns "RightSuper" — callers remap to "Super" if needed.
+    pub fn keycode_to_name(code: u16) -> Option<&'static str> {
+        match code {
+            VK_CONTROL_LEFT | VK_CONTROL_RIGHT => Some("Control"),
+            VK_COMMAND_RIGHT => Some("RightSuper"),
+            VK_COMMAND_LEFT => Some("Super"),
+            VK_OPTION_LEFT | VK_OPTION_RIGHT => Some("Alt"),
+            VK_SHIFT_LEFT | VK_SHIFT_RIGHT => Some("Shift"),
+            VK_F1 => Some("F1"),
+            VK_F2 => Some("F2"),
+            VK_F3 => Some("F3"),
+            VK_F4 => Some("F4"),
+            VK_F5 => Some("F5"),
+            VK_F6 => Some("F6"),
+            VK_F7 => Some("F7"),
+            VK_F8 => Some("F8"),
+            VK_F9 => Some("F9"),
+            VK_F10 => Some("F10"),
+            VK_F11 => Some("F11"),
+            VK_F12 => Some("F12"),
+            _ => None,
+        }
+    }
+
+    /// Return the CGEventFlags mask for a modifier key code, if applicable.
+    fn modifier_flag_for_keycode(code: u16) -> Option<CGEventFlags> {
+        match code {
+            VK_CONTROL_LEFT | VK_CONTROL_RIGHT => Some(CG_EVENT_FLAG_CONTROL),
+            VK_COMMAND_LEFT | VK_COMMAND_RIGHT => Some(CG_EVENT_FLAG_COMMAND),
+            VK_OPTION_LEFT | VK_OPTION_RIGHT => Some(CG_EVENT_FLAG_ALTERNATE),
+            VK_SHIFT_LEFT | VK_SHIFT_RIGHT => Some(CG_EVENT_FLAG_SHIFT),
+            _ => None,
+        }
+    }
+
+    /// Context passed through the CGEventTap userInfo pointer.
+    pub struct TapContext {
+        pub callback: Box<dyn FnMut(&str, bool) + Send>,
+        /// Tap reference for re-enabling after timeout
+        pub tap_ref: Option<CFMachPortRef>,
+    }
+
+    /// Raw C callback for the CGEventTap.
+    unsafe extern "C" fn tap_callback(
+        _proxy: CGEventTapProxy,
+        event_type: u32,
+        event: CGEventRef,
+        user_info: *mut c_void,
+    ) -> CGEventRef {
+        // Re-enable tap if macOS disabled it due to timeout
+        if event_type == CG_EVENT_TAP_DISABLED_BY_TIMEOUT {
+            tracing::warn!("CGEventTap disabled by timeout, re-enabling");
+            // Re-enable using the tap ref stored in TapContext
+            let ctx = &mut *(user_info as *mut TapContext);
+            if let Some(tap) = ctx.tap_ref {
+                CGEventTapEnable(tap, true);
+            }
+            return event;
+        }
+
+        let ctx = &mut *(user_info as *mut TapContext);
+
+        let keycode =
+            CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) as u16;
+
+        tracing::debug!("CGEventTap: type={}, keycode=0x{:02X}", event_type, keycode);
+
+        if event_type == CG_EVENT_FLAGS_CHANGED {
+            // Modifier key — determine press/release from current flags
+            if let Some(name) = keycode_to_name(keycode) {
+                if let Some(flag) = modifier_flag_for_keycode(keycode) {
+                    let flags = CGEventGetFlags(event);
+                    let is_press = (flags & flag) != 0;
+                    (ctx.callback)(name, is_press);
+                }
+            }
+        } else if event_type == CG_EVENT_KEY_DOWN {
+            if let Some(name) = keycode_to_name(keycode) {
+                (ctx.callback)(name, true);
+            }
+        } else if event_type == CG_EVENT_KEY_UP {
+            if let Some(name) = keycode_to_name(keycode) {
+                (ctx.callback)(name, false);
+            }
+        }
+
+        event // listen-only: pass event through unchanged
+    }
+
+    /// Create and run a CGEventTap on the current thread's run loop.
+    /// This blocks forever (run on a dedicated thread).
+    pub fn run_event_tap(mut ctx: TapContext) -> Result<(), String> {
+        unsafe {
+            // Check Accessibility permission upfront
+            let trusted = AXIsProcessTrusted();
+            if trusted {
+                tracing::info!("Accessibility permission: granted");
+            } else {
+                tracing::error!(
+                    "Accessibility permission: NOT granted. \
+                     Grant access in System Settings > Privacy & Security > Accessibility"
+                );
+            }
+
+            // Listen for keyDown, keyUp, and flagsChanged
+            let mask: CGEventMask = (1 << CG_EVENT_KEY_DOWN)
+                | (1 << CG_EVENT_KEY_UP)
+                | (1 << CG_EVENT_FLAGS_CHANGED);
+
+            let tap = CGEventTapCreate(
+                K_CG_HID_EVENT_TAP,
+                K_CG_HEAD_INSERT_EVENT_TAP,
+                K_CG_EVENT_TAP_OPTION_LISTEN_ONLY,
+                mask,
+                tap_callback,
+                &mut ctx as *mut TapContext as *mut c_void,
+            );
+
+            if tap.is_null() {
+                return Err(
+                    "CGEventTapCreate failed — grant Accessibility permission in \
+                     System Settings > Privacy & Security > Accessibility"
+                        .into(),
+                );
+            }
+
+            tracing::info!("CGEventTap created successfully");
+
+            // Store tap ref so the callback can re-enable it on timeout
+            ctx.tap_ref = Some(tap);
+
+            let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
+            if source.is_null() {
+                CFRelease(tap as *const c_void);
+                return Err("CFMachPortCreateRunLoopSource failed".into());
+            }
+
+            let run_loop = CFRunLoopGetCurrent();
+            CFRunLoopAddSource(run_loop, source, kCFRunLoopCommonModes);
+            CGEventTapEnable(tap, true);
+
+            // Run forever — this blocks the thread
+            CFRunLoopRun();
+
+            CFRelease(source as *const c_void);
+            CFRelease(tap as *const c_void);
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+/// Spawns a native CGEventTap hotkey listener (macOS).
+///
+/// Uses Core Graphics directly instead of rdev to avoid the
+/// TSMGetInputSourceProperty main-thread assertion crash.
+fn spawn_hotkey_listener(app_handle: AppHandle, hold_keys: Vec<String>) {
+    thread::spawn(move || {
+        let label = hold_keys.join("+");
+        info!("Starting hotkey listener (CGEventTap): {}", label);
+
+        // Build name set for quick lookup
+        let hold_set: std::collections::HashSet<String> =
+            hold_keys.iter().cloned().collect();
+
+        let mut pressed: HashMap<String, bool> =
+            hold_keys.iter().map(|k| (k.clone(), false)).collect();
+        let mut dictation_active = false;
+
+        let startup_time = std::time::Instant::now();
+        let grace_period = std::time::Duration::from_secs(5);
+
+        let app = app_handle.clone();
+        let ctx = macos_hotkey::TapContext {
+            tap_ref: None, // set by run_event_tap after creation
+            callback: Box::new(move |key_name: &str, is_press: bool| {
+                if startup_time.elapsed() < grace_period {
+                    return;
+                }
+
+                // Map key name to configured group.
+                // "RightSuper" matches config "RightSuper" directly, or falls
+                // back to "Super" (since right Cmd is a subset of both Cmd keys).
+                let group = if hold_set.contains(key_name) {
+                    key_name.to_string()
+                } else if key_name == "RightSuper" && hold_set.contains("Super") {
+                    "Super".to_string()
+                } else {
+                    return;
+                };
+                if is_press {
+                    pressed.insert(group.clone(), true);
+                    debug!("{} pressed, state={:?}", group, pressed);
+
+                    let all_pressed = pressed.values().all(|&v| v);
+                    if all_pressed && !dictation_active {
+                        dictation_active = true;
+                        info!("{} pressed - starting dictation", label);
+
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.unminimize();
+                            let _ = window.show();
+                            let _ = window.set_always_on_top(true);
+                        }
+
+                        if let Err(e) = app.emit("dictation-start", ()) {
+                            error!("Failed to emit dictation-start: {}", e);
+                        }
+                    }
+                } else {
+                    pressed.insert(group.clone(), false);
+                    debug!("{} released, dictation_active={}", group, dictation_active);
+
+                    if dictation_active {
+                        dictation_active = false;
+                        info!("{} released - stopping dictation", group);
+
+                        if let Err(e) = app.emit("dictation-stop", ()) {
+                            error!("Failed to emit dictation-stop: {}", e);
+                        }
+                    }
+                }
+            }),
+        };
+
+        if let Err(e) = macos_hotkey::run_event_tap(ctx) {
+            error!("Hotkey listener error: {}", e);
         }
     });
 }

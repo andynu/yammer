@@ -176,8 +176,10 @@ impl KyutaiTranscriber {
         );
 
         // Load ASR language model with the config derived from config.json
-        info!("Loading LM from {:?} with dtype BF16 on {:?}", model_path, device);
-        let lm = moshi::lm::load_lm_model(lm_cfg, &model_path, DType::BF16, &device)
+        // Use BF16 on GPU (faster), F32 on CPU (BF16 ops not fully supported on CPU)
+        let dtype = if device.is_cuda() { DType::BF16 } else { DType::F32 };
+        info!("Loading LM from {:?} with dtype {:?} on {:?}", model_path, dtype, device);
+        let lm = moshi::lm::load_lm_model(lm_cfg, &model_path, dtype, &device)
             .with_context(|| format!(
                 "Failed to load LM model from {:?} (device={:?})",
                 model_path, device

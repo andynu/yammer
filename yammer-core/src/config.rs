@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 #[serde(default)]
 pub struct HotkeyConfig {
     /// Keys to hold simultaneously for dictation (e.g. ["Control", "Super"])
-    /// Valid values: Control, Super, Alt, AltRight, Shift, F1-F12
+    /// Valid values: Control, Super, RightSuper, Alt, AltRight, Shift, F1-F12
     pub hold_keys: Vec<String>,
     /// Single key for toggle mode (press to start, press again to stop)
     /// Valid values: F1-F12, or None to disable toggle mode
@@ -21,6 +21,9 @@ pub struct HotkeyConfig {
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
+            #[cfg(target_os = "macos")]
+            hold_keys: vec!["RightSuper".to_string()],
+            #[cfg(not(target_os = "macos"))]
             hold_keys: vec!["Control".to_string(), "Super".to_string()],
             toggle_key: Some("F6".to_string()),
         }
@@ -34,7 +37,8 @@ impl HotkeyConfig {
             .iter()
             .map(|k| match k.as_str() {
                 "Control" => "Ctrl",
-                "Super" => "Super",
+                "Super" => if cfg!(target_os = "macos") { "Cmd" } else { "Super" },
+                "RightSuper" => "Right Cmd",
                 "Alt" => "Alt",
                 "AltRight" => "Right Alt",
                 "Shift" => "Shift",
@@ -368,8 +372,16 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.hotkey.hold_keys, vec!["Control", "Super"]);
-        assert_eq!(config.hotkey.display_name(), "Ctrl+Super");
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(config.hotkey.hold_keys, vec!["RightSuper"]);
+            assert_eq!(config.hotkey.display_name(), "Right Cmd");
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(config.hotkey.hold_keys, vec!["Control", "Super"]);
+            assert_eq!(config.hotkey.display_name(), "Ctrl+Super");
+        }
         assert_eq!(config.models.stt, "kyutai/stt-1b-en_fr-candle");
         assert_eq!(config.audio.vad_threshold, 0.01);
         assert_eq!(config.output.method, "type");
