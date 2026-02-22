@@ -2,6 +2,7 @@
 //!
 //! Provides methods to inject text into the user's focused application.
 //! On Linux, uses xdotool/xclip. On Windows, uses enigo/clipboard-win.
+//! On macOS, uses enigo/arboard (requires Accessibility permissions).
 
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -32,7 +33,7 @@ pub type OutputResult<T> = Result<T, OutputError>;
 /// Output method to use for text injection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputMethod {
-    /// Simulate keystrokes (xdotool type on Linux, enigo on Windows)
+    /// Simulate keystrokes (xdotool on Linux, enigo on Windows/macOS)
     #[default]
     Type,
     /// Use clipboard + paste (more compatible with some apps)
@@ -88,7 +89,14 @@ impl TextOutput {
             // enigo doesn't need an external tool check
             Ok(())
         }
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        #[cfg(target_os = "macos")]
+        {
+            // enigo doesn't need an external tool check on macOS.
+            // Note: Accessibility permissions are required at runtime —
+            // macOS will prompt the user to grant them on first use.
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         {
             Err(OutputError::InputSimulationFailed(
                 "Unsupported platform".into(),
@@ -190,6 +198,79 @@ impl TextOutput {
             warn!("xdotool key failed with exit code {}", code);
             Err(OutputError::NonZeroExit(code))
         }
+    }
+
+    // ── macOS implementation ──────────────────────────────────────────
+
+    #[cfg(target_os = "macos")]
+    fn type_text(&self, text: &str) -> OutputResult<()> {
+        use enigo::{Enigo, Keyboard, Settings};
+
+        info!(
+            "Typing {} characters via enigo (delay={}ms)",
+            text.len(),
+            self.typing_delay_ms
+        );
+
+        let mut enigo = Enigo::new(&Settings::default()).map_err(|e| {
+            OutputError::InputSimulationFailed(format!("Failed to create Enigo instance: {}", e))
+        })?;
+
+        if self.typing_delay_ms == 0 {
+            enigo.text(text).map_err(|e| {
+                OutputError::InputSimulationFailed(format!("Failed to type text: {}", e))
+            })?;
+        } else {
+            let delay = std::time::Duration::from_millis(self.typing_delay_ms as u64);
+            for ch in text.chars() {
+                enigo.text(&ch.to_string()).map_err(|e| {
+                    OutputError::InputSimulationFailed(format!("Failed to type '{}': {}", ch, e))
+                })?;
+                std::thread::sleep(delay);
+            }
+        }
+
+        debug!("enigo type completed successfully");
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn paste_text(&self, text: &str) -> OutputResult<()> {
+        use arboard::Clipboard;
+        use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+
+        info!("Pasting {} characters via clipboard", text.len());
+
+        // Set clipboard content
+        let mut clipboard = Clipboard::new().map_err(|e| {
+            OutputError::ClipboardFailed(format!("Failed to open clipboard: {}", e))
+        })?;
+        clipboard.set_text(text).map_err(|e| {
+            OutputError::ClipboardFailed(format!("Failed to set clipboard: {}", e))
+        })?;
+
+        // Small delay to ensure clipboard is set
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Simulate Cmd+V to paste (macOS uses Meta/Cmd, not Control)
+        let mut enigo = Enigo::new(&Settings::default()).map_err(|e| {
+            OutputError::InputSimulationFailed(format!("Failed to create Enigo instance: {}", e))
+        })?;
+
+        enigo.key(Key::Meta, Direction::Press).map_err(|e| {
+            OutputError::InputSimulationFailed(format!("Failed to press Cmd: {}", e))
+        })?;
+        enigo
+            .key(Key::Unicode('v'), Direction::Click)
+            .map_err(|e| {
+                OutputError::InputSimulationFailed(format!("Failed to press V: {}", e))
+            })?;
+        enigo.key(Key::Meta, Direction::Release).map_err(|e| {
+            OutputError::InputSimulationFailed(format!("Failed to release Cmd: {}", e))
+        })?;
+
+        debug!("Clipboard paste completed successfully");
+        Ok(())
     }
 
     // ── Windows implementation ────────────────────────────────────────

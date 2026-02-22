@@ -12,6 +12,8 @@ tracing.workspace = true
 cpal.workspace = true
 hound.workspace = true
 rubato.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.181"
 
 [dev-dependencies]
