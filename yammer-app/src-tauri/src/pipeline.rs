@@ -6,7 +6,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use yammer_audio::{AudioCapture, AudioResampler, VadProcessor, VadEvent, Vad, KYUTAI_SAMPLE_RATE};
+use yammer_audio::{AudioCapture, AudioResampler, VadProcessor, Vad, KYUTAI_SAMPLE_RATE};
 use yammer_output::{TextOutput, OutputMethod};
 use yammer_stt::{KyutaiTranscriber, KYUTAI_CHUNK_SAMPLES};
 use yammer_llm::Corrector;
@@ -95,6 +95,8 @@ pub struct DictationPipeline {
     event_tx: mpsc::Sender<PipelineEvent>,
     /// Pre-initialized audio capture to reduce keypress-to-listening latency
     audio_capture: Option<AudioCapture>,
+    /// Window ID to refocus before text output (captured at activation time)
+    target_window: Option<String>,
 }
 
 impl DictationPipeline {
@@ -108,7 +110,13 @@ impl DictationPipeline {
             corrector: None,
             event_tx,
             audio_capture: None,
+            target_window: None,
         }
+    }
+
+    /// Set the target window to refocus before text output
+    pub fn set_target_window(&mut self, window_id: Option<String>) {
+        self.target_window = window_id;
     }
 
     /// Initialize the pipeline (load models)
@@ -393,7 +401,6 @@ impl DictationPipeline {
             None
         };
         let recording_start = Instant::now();
-        let mut ever_had_speech = false;
 
         // Create resampler once (reused across all chunks for efficiency + quality)
         let mut resampler = if input_sample_rate != KYUTAI_SAMPLE_RATE {
@@ -493,20 +500,17 @@ impl DictationPipeline {
             debug!("Audio chunk: {} samples, RMS={:.6}", chunk.len(), rms);
             self.send_audio_level(rms);
 
-            // VAD for speech detection
-            let events = vad.process(&chunk);
-            for event in &events {
-                if matches!(event, VadEvent::SpeechStart) {
-                    debug!("Speech started");
-                    ever_had_speech = true;
-                }
-            }
+            // VAD for speech detection (used for waveform UI, not timeout gating)
+            let _events = vad.process(&chunk);
 
-            // Silence timeout: discard if no speech detected at all within the timeout
-            if !ever_had_speech {
+            // Silence timeout: discard if no words transcribed within the timeout.
+            // Uses STT output (not VAD) so it won't misfire when the mic is active
+            // but VAD thresholds don't trigger. Once any word is transcribed, the
+            // timeout is permanently disabled for this session.
+            if accumulated_words.is_empty() {
                 if let Some(timeout) = silence_timeout {
                     if recording_start.elapsed() >= timeout {
-                        info!("Silence timeout with no speech detected, discarding");
+                        info!("Silence timeout with no words transcribed, discarding");
                         return Err("No audio recorded".to_string());
                     }
                 }
@@ -683,7 +687,8 @@ impl DictationPipeline {
         let output = TextOutput::with_options(
             self.config.output_method,
             self.config.typing_delay_ms,
-        );
+        )
+        .with_target_window(self.target_window.clone());
 
         match output.output(text) {
             Ok(()) => {

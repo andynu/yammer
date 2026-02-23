@@ -45,6 +45,8 @@ pub struct TextOutput {
     method: OutputMethod,
     /// Delay between keystrokes in milliseconds (for Type method)
     typing_delay_ms: u32,
+    /// Window ID to refocus before outputting (captured at activation time)
+    target_window: Option<String>,
 }
 
 impl Default for TextOutput {
@@ -59,6 +61,7 @@ impl TextOutput {
         Self {
             method: OutputMethod::Type,
             typing_delay_ms: 0,
+            target_window: None,
         }
     }
 
@@ -67,6 +70,7 @@ impl TextOutput {
         Self {
             method,
             typing_delay_ms: 0,
+            target_window: None,
         }
     }
 
@@ -75,7 +79,16 @@ impl TextOutput {
         Self {
             method,
             typing_delay_ms,
+            target_window: None,
         }
+    }
+
+    /// Set the target window to refocus before outputting text.
+    /// The window ID should be captured via `xdotool getactivewindow` before
+    /// the Yammer window is shown, so text goes back to the user's app.
+    pub fn with_target_window(mut self, window_id: Option<String>) -> Self {
+        self.target_window = window_id;
+        self
     }
 
     /// Check if the text output backend is available
@@ -125,10 +138,51 @@ impl TextOutput {
             return Ok(());
         }
 
+        // Refocus the target window before outputting, so text goes to the
+        // user's app rather than Yammer's own window
+        self.refocus_target()?;
+
         match self.method {
             OutputMethod::Type => self.type_text(&sanitized),
             OutputMethod::Clipboard => self.paste_text(&sanitized),
         }
+    }
+
+    /// Refocus the saved target window (the window that was active before Yammer appeared)
+    fn refocus_target(&self) -> OutputResult<()> {
+        let Some(ref window_id) = self.target_window else {
+            return Ok(());
+        };
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::process::Command;
+
+            info!("Refocusing target window: {}", window_id);
+            let status = Command::new("xdotool")
+                .args(["windowactivate", "--sync", window_id])
+                .status()?;
+
+            if status.success() {
+                debug!("Target window refocused successfully");
+                // Brief settle time for the window manager
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            } else {
+                warn!(
+                    "Failed to refocus window {} (exit code {}), outputting to current focus",
+                    window_id,
+                    status.code().unwrap_or(-1)
+                );
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = window_id;
+            debug!("Target window refocus not implemented on this platform");
+        }
+
+        Ok(())
     }
 
     // ── Linux implementation ──────────────────────────────────────────
@@ -344,6 +398,42 @@ impl TextOutput {
         debug!("Clipboard paste completed successfully");
         Ok(())
     }
+}
+
+/// Capture the currently active/focused window ID.
+/// Call this before showing the Yammer window so we know where to send text back.
+#[cfg(target_os = "linux")]
+pub fn capture_active_window() -> Option<String> {
+    use std::process::Command;
+
+    match Command::new("xdotool").arg("getactivewindow").output() {
+        Ok(output) if output.status.success() => {
+            let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if id.is_empty() {
+                debug!("xdotool getactivewindow returned empty string");
+                None
+            } else {
+                debug!("Captured active window: {}", id);
+                Some(id)
+            }
+        }
+        Ok(output) => {
+            debug!(
+                "xdotool getactivewindow failed (exit {})",
+                output.status.code().unwrap_or(-1)
+            );
+            None
+        }
+        Err(e) => {
+            debug!("Failed to run xdotool getactivewindow: {}", e);
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn capture_active_window() -> Option<String> {
+    None
 }
 
 // ── Linux-only helpers ────────────────────────────────────────────────

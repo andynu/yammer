@@ -20,7 +20,7 @@ use rdev::{listen, Event, EventType, Key};
 
 use pipeline::{DictationPipeline, PipelineConfig, PipelineEvent};
 use yammer_core::Config;
-use yammer_output::OutputMethod;
+use yammer_output::{OutputMethod, capture_active_window};
 
 // ── Linux/Windows: rdev-based hotkey listener ────────────────────────
 
@@ -109,6 +109,13 @@ fn spawn_hotkey_listener(app_handle: AppHandle, hold_keys: Vec<String>) {
                 if all_pressed && !dictation_active {
                     dictation_active = true;
                     info!("{} pressed - starting dictation", label);
+
+                    // Capture the currently focused window BEFORE showing Yammer,
+                    // so we can refocus it when outputting text
+                    let target = capture_active_window();
+                    if let Ok(mut guard) = app_handle.state::<AppState>().paste_target.lock() {
+                        *guard = target;
+                    }
 
                     if let Some(window) = app_handle.get_webview_window("main") {
                         let _ = window.unminimize();
@@ -491,6 +498,9 @@ pub struct AppState {
     idle_timer_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Idle unload timeout in seconds (0 = disabled)
     idle_unload_seconds: u64,
+    /// Window ID to refocus before text output (captured before showing Yammer).
+    /// Uses std::sync::Mutex (not tokio) so it's accessible from the rdev hotkey thread.
+    paste_target: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// Schedule (or reschedule) the idle unload timer.
@@ -698,9 +708,13 @@ async fn start_dictation(
             }
         }
 
-        match pipeline_guard.as_ref() {
+        match pipeline_guard.as_mut() {
             Some(p) if p.is_initialized() => {
                 info!("Pipeline is initialized, proceeding with dictation");
+
+                // Set the paste target so output refocuses the user's window
+                let target = state.paste_target.lock().ok().and_then(|g| g.clone());
+                p.set_target_window(target);
 
                 // Get cancel/discard handles while we have pipeline lock
                 let cancel_handle = p.get_cancel_handle();
@@ -1014,6 +1028,7 @@ pub fn run() {
         pipeline_config: Arc::new(Mutex::new(None)),
         idle_timer_handle: Arc::new(Mutex::new(None)),
         idle_unload_seconds,
+        paste_target: Arc::new(std::sync::Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -1027,6 +1042,14 @@ pub fn run() {
                 let was_visible = window.is_visible().unwrap_or(false);
                 let was_minimized = window.is_minimized().unwrap_or(false);
                 let is_toggle = argv.iter().any(|arg| arg == "--toggle");
+
+                // Capture paste target before showing window (for dictation modes)
+                if is_toggle {
+                    let target = capture_active_window();
+                    if let Ok(mut guard) = app.state::<AppState>().paste_target.lock() {
+                        *guard = target;
+                    }
+                }
 
                 if !was_visible || was_minimized {
                     info!("Window was hidden/minimized, bringing forward");
@@ -1079,6 +1102,12 @@ pub fn run() {
 
                     if is_toggle || is_legacy {
                         debug!("Dictation toggle hotkey pressed");
+
+                        // Capture paste target before showing window
+                        let target = capture_active_window();
+                        if let Ok(mut guard) = app.state::<AppState>().paste_target.lock() {
+                            *guard = target;
+                        }
 
                         // Check if window was hidden/minimized and bring it forward
                         let was_hidden = if let Some(window) = app.get_webview_window("main") {
@@ -1175,6 +1204,11 @@ pub fn run() {
                     }
                     "toggle" => {
                         info!("Tray: Toggle Recording clicked");
+                        // Capture paste target before toggling dictation
+                        let target = capture_active_window();
+                        if let Ok(mut guard) = app.state::<AppState>().paste_target.lock() {
+                            *guard = target;
+                        }
                         if let Err(e) = app.emit("dictation-toggle", ()) {
                             error!("Failed to emit dictation-toggle: {}", e);
                         }
@@ -1323,6 +1357,7 @@ mod tests {
             pipeline_config: Arc::new(Mutex::new(None)),
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
+            paste_target: Arc::new(std::sync::Mutex::new(None)),
         };
 
         // Initial state should be not running
@@ -1356,6 +1391,7 @@ mod tests {
             pipeline_config: Arc::new(Mutex::new(None)),
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
+            paste_target: Arc::new(std::sync::Mutex::new(None)),
         };
 
         // Simulate setting cancel handle (as start_dictation would)
@@ -1390,6 +1426,7 @@ mod tests {
             pipeline_config: Arc::new(Mutex::new(None)),
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
+            paste_target: Arc::new(std::sync::Mutex::new(None)),
         };
 
         // Start dictation would set is_running to true
@@ -1420,6 +1457,7 @@ mod tests {
             pipeline_config: Arc::new(Mutex::new(None)),
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
+            paste_target: Arc::new(std::sync::Mutex::new(None)),
         };
 
         // Initially no transcription
