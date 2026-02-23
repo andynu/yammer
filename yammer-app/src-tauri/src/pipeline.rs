@@ -6,7 +6,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use yammer_audio::{AudioCapture, VadProcessor, VadEvent, resample_to_kyutai, Vad};
+use yammer_audio::{AudioCapture, AudioResampler, VadProcessor, VadEvent, Vad, KYUTAI_SAMPLE_RATE};
 use yammer_output::{TextOutput, OutputMethod};
 use yammer_stt::{KyutaiTranscriber, KYUTAI_CHUNK_SAMPLES};
 use yammer_llm::Corrector;
@@ -395,11 +395,32 @@ impl DictationPipeline {
         let recording_start = Instant::now();
         let mut ever_had_speech = false;
 
-        // Carry buffer: accumulates resampled 24 kHz samples between chunks
+        // Create resampler once (reused across all chunks for efficiency + quality)
+        let mut resampler = if input_sample_rate != KYUTAI_SAMPLE_RATE {
+            Some(
+                AudioResampler::new(input_sample_rate, KYUTAI_SAMPLE_RATE)
+                    .map_err(|e| format!("Failed to create resampler: {}", e))?,
+            )
+        } else {
+            None
+        };
+        let resample_chunk_size = resampler
+            .as_ref()
+            .map(|r| r.input_frames_next())
+            .unwrap_or(0);
+
+        // Raw audio buffer (device rate, pre-resampling) — we accumulate here
+        // so we only feed the resampler exact multiples of its internal chunk size.
+        let mut raw_buf: Vec<f32> = Vec::with_capacity(input_sample_rate as usize);
+
+        // Carry buffer: accumulates resampled 24 kHz samples between STT steps
         let mut carry_buf: Vec<f32> = Vec::with_capacity(KYUTAI_CHUNK_SAMPLES * 4);
 
         // Accumulated words from STT
         let mut accumulated_words: Vec<String> = Vec::new();
+
+        // Total chunks received (for diagnostics)
+        let mut total_chunks: u32 = 0;
 
         while let Some(chunk) = rx.blocking_recv() {
             // Check discard/cancel before doing any work
@@ -409,19 +430,67 @@ impl DictationPipeline {
             }
 
             if self.is_cancelled() {
+                // Drain ALL remaining buffered audio from the channel — without
+                // this, chunks that arrived while the STT was busy are lost.
+                let mut drained: u32 = 0;
+                raw_buf.extend_from_slice(&chunk);
+                total_chunks += 1;
+                while let Ok(remaining) = rx.try_recv() {
+                    raw_buf.extend_from_slice(&remaining);
+                    drained += 1;
+                    total_chunks += 1;
+                }
                 info!(
-                    "Listening stopped by user, {} accumulated words",
-                    accumulated_words.len()
+                    "Listening stopped by user, {} accumulated words, {} total chunks ({} drained from buffer)",
+                    accumulated_words.len(),
+                    total_chunks,
+                    drained,
                 );
-                // Flush remaining carry buffer as one last step
-                if let Some(ref mut t) = self.transcriber {
-                    Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
+
+                // Resample + STT the drained audio
+                Self::resample_into_carry(
+                    &mut resampler,
+                    &mut raw_buf,
+                    resample_chunk_size,
+                    &mut carry_buf,
+                );
+                Self::drain_carry_through_stt(
+                    self.transcriber.as_mut().unwrap(),
+                    &mut carry_buf,
+                    &mut accumulated_words,
+                    &self.event_tx,
+                );
+                // Flush any partial carry buffer
+                Self::flush_carry_buf(
+                    self.transcriber.as_mut().unwrap(),
+                    &mut carry_buf,
+                    &mut accumulated_words,
+                );
+                // Flush resampler tail
+                if let Some(ref mut r) = resampler {
+                    if let Ok(tail) = r.flush() {
+                        carry_buf.extend_from_slice(&tail);
+                        Self::drain_carry_through_stt(
+                            self.transcriber.as_mut().unwrap(),
+                            &mut carry_buf,
+                            &mut accumulated_words,
+                            &self.event_tx,
+                        );
+                        Self::flush_carry_buf(
+                            self.transcriber.as_mut().unwrap(),
+                            &mut carry_buf,
+                            &mut accumulated_words,
+                        );
+                    }
                 }
                 break;
             }
 
+            total_chunks += 1;
+
             // Audio level for the waveform visualisation (on raw device-rate samples)
             let rms = Vad::calculate_rms(&chunk);
+            debug!("Audio chunk: {} samples, RMS={:.6}", chunk.len(), rms);
             self.send_audio_level(rms);
 
             // VAD for speech detection
@@ -443,38 +512,34 @@ impl DictationPipeline {
                 }
             }
 
-            // Resample to 24 kHz and extend carry buffer
-            let chunk_24k = resample_to_kyutai(&chunk, input_sample_rate)
-                .map_err(|e| format!("Resampling failed: {}", e))?;
-            carry_buf.extend_from_slice(&chunk_24k);
+            // Accumulate raw audio and resample in proper chunks
+            raw_buf.extend_from_slice(&chunk);
+            Self::resample_into_carry(
+                &mut resampler,
+                &mut raw_buf,
+                resample_chunk_size,
+                &mut carry_buf,
+            );
 
-            // Drain carry buffer in 1920-sample steps
-            while carry_buf.len() >= KYUTAI_CHUNK_SAMPLES {
-                let slice: Vec<f32> = carry_buf.drain(..KYUTAI_CHUNK_SAMPLES).collect();
-
-                let words = self.transcriber.as_mut().unwrap()
-                    .step(&slice)
-                    .map_err(|e| format!("STT step failed: {}", e))?;
-
-                if !words.is_empty() {
-                    accumulated_words.extend(words);
-                    let partial_text = accumulated_words.join(" ");
-                    debug!("Partial transcript: {:?}", partial_text);
-                    self.send_transcript(partial_text, true);
-                }
-            }
+            // Drain carry buffer in 1920-sample steps through STT
+            Self::drain_carry_through_stt(
+                self.transcriber.as_mut().unwrap(),
+                &mut carry_buf,
+                &mut accumulated_words,
+                &self.event_tx,
+            );
 
             // Safety max-duration timeout
             let max_seconds = self.config.max_recording_seconds;
             if max_seconds > 0 {
-                let estimated_seconds = accumulated_words.len() as f32 * 0.4; // rough estimate
                 let elapsed = recording_start.elapsed().as_secs() as u32;
                 if elapsed >= max_seconds {
                     warn!("Recording timeout ({}s max)", max_seconds);
-                    if let Some(ref mut t) = self.transcriber {
-                        Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
-                    }
-                    let _ = estimated_seconds; // suppress warning
+                    Self::flush_carry_buf(
+                        self.transcriber.as_mut().unwrap(),
+                        &mut carry_buf,
+                        &mut accumulated_words,
+                    );
                     break;
                 }
             }
@@ -510,6 +575,61 @@ impl DictationPipeline {
             accumulated_words.extend(words);
         }
         carry_buf.clear();
+    }
+
+    /// Resample audio from `raw_buf` (device rate) into `carry_buf` (24 kHz).
+    /// Only processes full `resample_chunk_size` blocks, leaving any remainder
+    /// in `raw_buf` for the next call.
+    fn resample_into_carry(
+        resampler: &mut Option<AudioResampler>,
+        raw_buf: &mut Vec<f32>,
+        resample_chunk_size: usize,
+        carry_buf: &mut Vec<f32>,
+    ) {
+        if let Some(ref mut r) = resampler {
+            while raw_buf.len() >= resample_chunk_size {
+                let slice: Vec<f32> = raw_buf.drain(..resample_chunk_size).collect();
+                match r.resample(&slice) {
+                    Ok(resampled) => carry_buf.extend_from_slice(&resampled),
+                    Err(e) => {
+                        warn!("Resampling failed: {}", e);
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Input is already at the target rate
+            carry_buf.append(raw_buf);
+        }
+    }
+
+    /// Drain carry_buf through the STT model in KYUTAI_CHUNK_SAMPLES steps,
+    /// accumulating recognised words and emitting partial transcripts.
+    fn drain_carry_through_stt(
+        transcriber: &mut KyutaiTranscriber,
+        carry_buf: &mut Vec<f32>,
+        accumulated_words: &mut Vec<String>,
+        event_tx: &mpsc::Sender<PipelineEvent>,
+    ) {
+        while carry_buf.len() >= KYUTAI_CHUNK_SAMPLES {
+            let slice: Vec<f32> = carry_buf.drain(..KYUTAI_CHUNK_SAMPLES).collect();
+            match transcriber.step(&slice) {
+                Ok(words) if !words.is_empty() => {
+                    accumulated_words.extend(words);
+                    let partial_text = accumulated_words.join(" ");
+                    debug!("Partial transcript: {:?}", partial_text);
+                    let _ = event_tx.try_send(PipelineEvent::Transcript {
+                        text: partial_text,
+                        is_partial: true,
+                    });
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("STT step failed during drain: {}", e);
+                    break;
+                }
+            }
+        }
     }
 
     /// Correct text using LLM (blocking)

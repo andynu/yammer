@@ -950,13 +950,32 @@ fn simulate_audio(app: AppHandle) -> Result<(), String> {
 /// Initialize and run the Tauri application
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("yammer=debug".parse().unwrap())
-                .add_directive("yammer_app=debug".parse().unwrap())
-        )
+    // Initialize tracing — write to both stderr and a log file so we can
+    // diagnose issues when launched from the .app bundle (no terminal).
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("yammer");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_file = std::fs::File::create(log_dir.join("yammer.log"))
+        .expect("Failed to create log file");
+
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive("yammer=debug".parse().unwrap())
+        .add_directive("yammer_app=debug".parse().unwrap());
+
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr);
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(std::sync::Mutex::new(log_file));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(stderr_layer)
+        .with(file_layer)
         .init();
 
     info!("Starting Yammer application");

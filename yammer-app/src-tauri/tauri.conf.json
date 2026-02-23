@@ -47,6 +47,9 @@
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0"
     }
   },
   "plugins": {
