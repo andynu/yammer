@@ -449,6 +449,13 @@ fn spawn_hotkey_listener(app_handle: AppHandle, hold_keys: Vec<String>) {
                         dictation_active = true;
                         info!("{} pressed - starting dictation", label);
 
+                        // Capture the currently focused window BEFORE showing Yammer,
+                        // so we can refocus it when outputting text
+                        let target = capture_active_window();
+                        if let Ok(mut guard) = app.state::<AppState>().paste_target.lock() {
+                            *guard = target;
+                        }
+
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.unminimize();
                             let _ = window.show();

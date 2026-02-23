@@ -176,7 +176,38 @@ impl TextOutput {
             }
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+
+            info!("Refocusing target app: {}", window_id);
+            let script = format!(
+                "tell application id \"{}\" to activate",
+                window_id
+            );
+            match Command::new("osascript")
+                .args(["-e", &script])
+                .status()
+            {
+                Ok(status) if status.success() => {
+                    debug!("Target app refocused successfully");
+                    // Wait for the app to actually come to front
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Ok(status) => {
+                    warn!(
+                        "Failed to refocus app {} (exit code {}), outputting to current focus",
+                        window_id,
+                        status.code().unwrap_or(-1)
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to run osascript for refocus: {}, outputting to current focus", e);
+                }
+            }
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = window_id;
             debug!("Target window refocus not implemented on this platform");
@@ -431,7 +462,42 @@ pub fn capture_active_window() -> Option<String> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+pub fn capture_active_window() -> Option<String> {
+    use std::process::Command;
+
+    match Command::new("osascript")
+        .args([
+            "-e",
+            "tell application \"System Events\" to get bundle identifier of first process whose frontmost is true",
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if id.is_empty() {
+                debug!("osascript returned empty bundle identifier");
+                None
+            } else {
+                debug!("Captured frontmost app: {}", id);
+                Some(id)
+            }
+        }
+        Ok(output) => {
+            debug!(
+                "osascript failed (exit {})",
+                output.status.code().unwrap_or(-1)
+            );
+            None
+        }
+        Err(e) => {
+            debug!("Failed to run osascript: {}", e);
+            None
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn capture_active_window() -> Option<String> {
     None
 }
