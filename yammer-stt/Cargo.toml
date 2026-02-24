@@ -17,6 +17,9 @@ serde_json.workspace = true
 hound.workspace = true
 rubato.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 # Kyutai/Moshi deps — Linux and Windows only (macOS uses Apple SpeechAnalyzer)
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 moshi = { workspace = true }

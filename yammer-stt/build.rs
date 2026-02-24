@@ -13,9 +13,13 @@ fn build_swift_bridge() {
     let swift_src = format!("{}/swift/SpeechBridge.swift", manifest_dir);
     let lib_path = format!("{}/libSpeechBridge.a", out_dir);
 
-    // Compile Swift source into a static library
+    // Compile Swift source into a static library.
+    // -parse-as-library is critical: without it, swiftc treats top-level
+    // global initializers as script code requiring a main entry point,
+    // which conflicts with Rust's main and causes SIGTRAP at runtime.
     let status = Command::new("swiftc")
         .args([
+            "-parse-as-library",
             "-emit-library",
             "-static",
             "-O",
@@ -44,12 +48,15 @@ fn build_swift_bridge() {
     )
     .unwrap();
 
-    // Parse the runtimeLibraryPaths from swift -print-target-info JSON
+    // Parse the runtimeLibraryPaths from swift -print-target-info JSON.
+    // We need both link-search (for the linker at build time) and rpath
+    // (for the dynamic loader at runtime to find libswift_Concurrency.dylib etc).
     if let Ok(info) = serde_json::from_str::<serde_json::Value>(&toolchain_lib) {
         if let Some(paths) = info["paths"]["runtimeLibraryPaths"].as_array() {
             for path in paths {
                 if let Some(p) = path.as_str() {
                     println!("cargo:rustc-link-search=native={}", p);
+                    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", p);
                 }
             }
         }

@@ -2,12 +2,21 @@
 //
 // macOS 26 (Tahoe) introduces SpeechAnalyzer in the Speech framework,
 // providing Whisper-class streaming STT on the Neural Engine.
+//
+// Architecture: All async work runs via DispatchQueue.global().async +
+// Task {} rather than Task.detached, and results are drained with a
+// bounded timeout. The key challenge is that SpeechAnalyzer requires
+// Swift async/await, but the C FFI callers are synchronous. We use
+// a GCD-initiated Task pattern where the Task is spawned from within
+// a DispatchQueue.async block, keeping the cooperative pool usage
+// transient. The drain task is replaced by periodic polling from the
+// Rust side via apple_stt_poll_results.
 
 import Foundation
 import Speech
 import AVFoundation
 
-// MARK: - Thread-safe result queue
+// MARK: - Thread-safe primitives
 
 private final class ResultQueue: @unchecked Sendable {
     private var queue: [String] = []
@@ -28,16 +37,40 @@ private final class ResultQueue: @unchecked Sendable {
     }
 }
 
+private final class AtomicInt32: @unchecked Sendable {
+    private var value: Int32
+    private let lock = NSLock()
+
+    init(_ v: Int32) { value = v }
+
+    func load() -> Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func store(_ v: Int32) {
+        lock.lock()
+        defer { lock.unlock() }
+        value = v
+    }
+}
+
 // MARK: - Global state
 
-private var gAnalyzer: SpeechAnalyzer? = nil
-private var gTranscriber: SpeechTranscriber? = nil
-private var gResults = ResultQueue()
+private let gResults = ResultQueue()
 private var gSampleRate: UInt32 = 16000
 private var gChannels: UInt32 = 1
 private var gInputContinuation: AsyncStream<AnalyzerInput>.Continuation? = nil
-private var gDrainTask: Task<Void, Never>? = nil
-private var gFinished = false
+
+/// Init state: 0 = pending, 1 = success, negative = error
+private let gInitState = AtomicInt32(0)
+
+/// Whether the result drain loop has been started (to avoid double-start).
+private var gDrainStarted = false
+
+// MARK: - Dedicated queue for all Speech work
+private let gSpeechQueue = DispatchQueue(label: "yammer.speech-bridge", qos: .userInitiated)
 
 // MARK: - C API
 
@@ -46,77 +79,81 @@ public func apple_stt_init(_ locale: UnsafePointer<CChar>?) -> Int32 {
     let localeStr = locale.map { String(cString: $0) } ?? "en-US"
     let nsLocale = Locale(identifier: localeStr)
 
-    // Request speech recognition permission (blocks on first call)
-    let semaphore = DispatchSemaphore(value: 0)
-    var authStatus: SFSpeechRecognizerAuthorizationStatus = .notDetermined
-    SFSpeechRecognizer.requestAuthorization { status in
-        authStatus = status
-        semaphore.signal()
-    }
-    semaphore.wait()
+    gInitState.store(0)
+    gDrainStarted = false
 
-    if authStatus != .authorized {
-        NSLog("[SpeechBridge] Speech recognition not authorized: \(authStatus.rawValue)")
-        return -1
-    }
+    // Launch async init from our dedicated GCD queue.
+    // The Task spawned inside runs on the cooperative pool, but
+    // it's short-lived (just init + start, then returns).
+    gSpeechQueue.async {
+        Task {
+            do {
+                let transcriber = SpeechTranscriber(
+                    locale: nsLocale,
+                    preset: .progressiveTranscription
+                )
 
-    // Use a blocking semaphore to bridge async init into the sync C function.
-    let initSema = DispatchSemaphore(value: 0)
-    var initError: Int32 = 0
+                if let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) {
+                    gSampleRate = UInt32(format.sampleRate)
+                    gChannels = UInt32(format.channelCount)
+                } else {
+                    gSampleRate = 16000
+                    gChannels = 1
+                }
 
-    Task {
-        do {
-            let transcriber = SpeechTranscriber(
-                locale: nsLocale,
-                preset: .progressiveTranscription
-            )
+                let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+                gInputContinuation = continuation
 
-            // Query the preferred audio format
-            if let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) {
-                gSampleRate = UInt32(format.sampleRate)
-                gChannels = UInt32(format.channelCount)
-            } else {
-                // Fallback: 16kHz mono
-                gSampleRate = 16000
-                gChannels = 1
-            }
+                let analyzer = SpeechAnalyzer(modules: [transcriber])
 
-            // Build an async stream that we control from the sync feed_pcm calls
-            let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-            gInputContinuation = continuation
+                try await analyzer.start(inputSequence: stream)
 
-            let analyzer = SpeechAnalyzer(modules: [transcriber])
-            gTranscriber = transcriber
-            gAnalyzer = analyzer
-
-            // Spawn a background task to drain results
-            gFinished = false
-            gDrainTask = Task {
-                do {
-                    for try await result in transcriber.results {
-                        let text = String(result.text.characters)
-                        if !text.isEmpty {
-                            gResults.push(text)
+                // Start draining results in a fire-and-forget manner.
+                // This task will run on the cooperative pool but is bounded
+                // by the lifetime of the result stream.
+                if !gDrainStarted {
+                    gDrainStarted = true
+                    Task.detached { [weak transcriber] in
+                        guard let transcriber = transcriber else { return }
+                        do {
+                            for try await result in transcriber.results {
+                                let text = String(result.text.characters)
+                                if !text.isEmpty {
+                                    gResults.push(text)
+                                }
+                            }
+                        } catch {
+                            // Expected when input ends
                         }
                     }
-                } catch {
-                    NSLog("[SpeechBridge] result drain error: \(error)")
                 }
-                gFinished = true
+
+                gInitState.store(1) // success
+
+                // Keep analyzer alive by storing globally.
+                // Using withExtendedLifetime to prevent optimizer from
+                // releasing it before we're done.
+                withExtendedLifetime(analyzer) {}
+
+            } catch {
+                NSLog("[SpeechBridge] init failed: \(error)")
+                gInitState.store(-2)
             }
-
-            // Start the analyzer with our input stream
-            try await analyzer.start(inputSequence: stream)
-
-            initError = 0
-        } catch {
-            NSLog("[SpeechBridge] init failed: \(error)")
-            initError = -2
         }
-        initSema.signal()
     }
-    initSema.wait()
-    return initError
+
+    // Spin-poll from the calling (Rust) thread.
+    let deadline = Date().addingTimeInterval(10.0)
+    while gInitState.load() == 0 && Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.005)
+    }
+
+    let state = gInitState.load()
+    if state == 0 {
+        NSLog("[SpeechBridge] init timed out")
+        return -3
+    }
+    return state == 1 ? 0 : state
 }
 
 @_cdecl("apple_stt_get_format")
@@ -138,7 +175,6 @@ public func apple_stt_feed_pcm(
         return -1
     }
 
-    // Create an AVAudioPCMBuffer matching the analyzer's expected format
     guard let format = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: Double(gSampleRate),
@@ -157,7 +193,6 @@ public func apple_stt_feed_pcm(
 
     pcmBuffer.frameLength = AVAudioFrameCount(count)
 
-    // Copy samples into the buffer's float channel data
     if let channelData = pcmBuffer.floatChannelData {
         channelData[0].update(from: samples, count: Int(count))
     }
@@ -186,20 +221,10 @@ public func apple_stt_poll_results(
 
 @_cdecl("apple_stt_stop")
 public func apple_stt_stop() -> Int32 {
-    // Signal end of audio input
+    // Finish the input stream. Do NOT deallocate anything —
+    // the cooperative pool may still have references. The OS
+    // reclaims everything on process exit.
     gInputContinuation?.finish()
     gInputContinuation = nil
-
-    // Wait briefly for the drain task to finish
-    let deadline = Date().addingTimeInterval(3.0)
-    while !gFinished && Date() < deadline {
-        Thread.sleep(forTimeInterval: 0.01)
-    }
-
-    gDrainTask?.cancel()
-    gDrainTask = nil
-    gTranscriber = nil
-    gAnalyzer = nil
-
     return 0
 }

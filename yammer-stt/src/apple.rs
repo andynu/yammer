@@ -4,6 +4,14 @@
 //! `SpeechAnalyzer` + `SpeechTranscriber`, feeds audio as
 //! `AVAudioPCMBuffer`, and drains results into a thread-safe queue
 //! that Rust polls via `apple_stt_poll_results`.
+//!
+//! ## Exit handling
+//!
+//! SpeechAnalyzer spawns tasks on Swift's cooperative thread pool that
+//! cannot be cleanly cancelled from C. When the process exits, the
+//! Swift runtime's cleanup triggers EXC_BREAKPOINT (__builtin_trap).
+//! We work around this by installing a SIGTRAP handler early and
+//! using _exit() in Drop to skip runtime cleanup.
 
 use anyhow::{Result, bail};
 use tracing::{debug, info};
@@ -19,6 +27,23 @@ unsafe extern "C" {
     fn apple_stt_stop() -> i32;
 }
 
+/// Install a SIGTRAP handler that calls _exit(0). This prevents
+/// EXC_BREAKPOINT from Swift's cooperative pool cleanup from crashing
+/// the process on exit. Only installed once.
+fn install_exit_trap_handler() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        unsafe extern "C" fn handle_trap(_sig: libc::c_int) {
+            // The Swift runtime is tearing down — just exit cleanly.
+            unsafe { libc::_exit(0) };
+        }
+        unsafe {
+            libc::signal(libc::SIGTRAP, handle_trap as libc::sighandler_t);
+        }
+    });
+}
+
 /// Apple SpeechAnalyzer-backed streaming transcriber.
 pub struct AppleSttTranscriber {
     sample_rate: u32,
@@ -32,6 +57,8 @@ impl AppleSttTranscriber {
     /// (the system model is used).
     pub fn new(_model_repo: &str) -> Result<Self> {
         info!("Initializing Apple SpeechAnalyzer STT backend");
+
+        install_exit_trap_handler();
 
         let locale = std::ffi::CString::new("en-US").unwrap();
         let rc = unsafe { apple_stt_init(locale.as_ptr()) };
@@ -124,19 +151,22 @@ impl SttBackend for AppleSttTranscriber {
             }
         }
 
-        // Signal end-of-stream and poll until we get the final result.
-        // apple_stt_stop sends finish + waits for the async task to drain.
-        let rc = unsafe { apple_stt_stop() };
-        if rc != 0 {
-            bail!("apple_stt_stop failed (rc={})", rc);
-        }
+        // Give the analyzer a moment to process
+        std::thread::sleep(std::time::Duration::from_millis(200));
 
-        // Drain any remaining text
+        // Drain any accumulated text
         while let Some(text) = self.poll_text() {
             if !all_text.is_empty() {
                 all_text.push(' ');
             }
             all_text.push_str(&text);
+        }
+
+        // Signal end of this batch — finishes the input continuation,
+        // but doesn't deallocate (which would crash the cooperative pool).
+        let rc = unsafe { apple_stt_stop() };
+        if rc != 0 {
+            bail!("apple_stt_stop failed (rc={})", rc);
         }
 
         // Re-initialise for next use

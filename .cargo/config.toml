@@ -1,0 +1,7 @@
+# macOS: embed rpath so the Rust binary can find the Swift runtime
+# (libswift_Concurrency.dylib etc.) at launch time.
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C", "link-arg=-Wl,-rpath,/Library/Developer/CommandLineTools/usr/lib/swift/macosx",
+    "-C", "link-arg=-Wl,-rpath,/usr/lib/swift",
+]
