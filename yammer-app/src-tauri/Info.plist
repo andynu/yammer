@@ -4,5 +4,7 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Yammer needs microphone access to capture speech for transcription.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Yammer uses on-device speech recognition to transcribe your dictation.</string>
 </dict>
 </plist>

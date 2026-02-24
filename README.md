@@ -6,7 +6,7 @@ Local speech-to-text with LLM correction. Speak naturally, get polished text typ
 
 ## Features
 
-- **Streaming Speech-to-Text** - Kyutai STT model transcribes as you speak
+- **Streaming Speech-to-Text** - Apple SpeechAnalyzer on macOS (Neural Engine), Kyutai STT on Linux/Windows
 - **LLM Text Correction** - Fixes homophones, adds punctuation, removes filler words
 - **Floating Overlay** - Transparent window with real-time waveform visualization
 - **Universal Input** - Types into any application (xdotool on Linux, enigo on macOS/Windows)
@@ -29,11 +29,15 @@ echo $XDG_SESSION_TYPE  # Should output: x11
 
 ### macOS
 
+**Requires macOS 26 (Tahoe) or later.** The STT backend uses Apple's SpeechAnalyzer API (Whisper-class quality, on-device via Neural Engine), which was introduced in macOS 26. Earlier macOS versions are not supported.
+
 **Accessibility permission is required** for the global hotkey to work outside the app. On first launch, grant access when prompted, or manually:
 
 1. Open **System Settings > Privacy & Security > Accessibility**
 2. Click "+" and add Yammer.app
 3. Ensure the toggle is enabled
+
+**Speech Recognition permission** is also required. Grant access when prompted, or enable it in **System Settings > Privacy & Security > Speech Recognition**.
 
 If the hotkey stops working after an update, remove and re-add Yammer in the Accessibility list (the binary signature changes on rebuild).
 

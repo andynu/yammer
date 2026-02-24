@@ -6,9 +6,9 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use yammer_audio::{AudioCapture, AudioResampler, VadProcessor, Vad, KYUTAI_SAMPLE_RATE};
+use yammer_audio::{AudioCapture, AudioResampler, VadProcessor, Vad};
 use yammer_output::{TextOutput, OutputMethod};
-use yammer_stt::{KyutaiTranscriber, KYUTAI_CHUNK_SAMPLES};
+use yammer_stt::{Transcriber, SttBackend};
 use yammer_llm::Corrector;
 
 /// Pipeline state
@@ -90,7 +90,7 @@ pub struct DictationPipeline {
     is_cancelled: Arc<AtomicBool>,
     /// If true, cancel completely without processing/outputting
     is_discarded: Arc<AtomicBool>,
-    transcriber: Option<KyutaiTranscriber>,
+    transcriber: Option<Transcriber>,
     corrector: Option<Arc<Corrector>>,
     event_tx: mpsc::Sender<PipelineEvent>,
     /// Pre-initialized audio capture to reduce keypress-to-listening latency
@@ -124,9 +124,9 @@ impl DictationPipeline {
         info!("Initializing dictation pipeline...");
         info!("STT model repo: {}", self.config.stt_model_repo);
 
-        // Load Kyutai STT model (auto-selects CUDA if available)
+        // Load STT model (Apple SpeechAnalyzer on macOS, Kyutai on Linux/Windows)
         let t0 = Instant::now();
-        match KyutaiTranscriber::new(&self.config.stt_model_repo) {
+        match Transcriber::new(&self.config.stt_model_repo) {
             Ok(transcriber) => {
                 self.transcriber = Some(transcriber);
                 info!("STT model loaded in {:.2}s", t0.elapsed().as_secs_f64());
@@ -403,9 +403,10 @@ impl DictationPipeline {
         let recording_start = Instant::now();
 
         // Create resampler once (reused across all chunks for efficiency + quality)
-        let mut resampler = if input_sample_rate != KYUTAI_SAMPLE_RATE {
+        let stt_sample_rate = self.transcriber.as_ref().unwrap().sample_rate();
+        let mut resampler = if input_sample_rate != stt_sample_rate {
             Some(
-                AudioResampler::new(input_sample_rate, KYUTAI_SAMPLE_RATE)
+                AudioResampler::new(input_sample_rate, stt_sample_rate)
                     .map_err(|e| format!("Failed to create resampler: {}", e))?,
             )
         } else {
@@ -420,8 +421,9 @@ impl DictationPipeline {
         // so we only feed the resampler exact multiples of its internal chunk size.
         let mut raw_buf: Vec<f32> = Vec::with_capacity(input_sample_rate as usize);
 
-        // Carry buffer: accumulates resampled 24 kHz samples between STT steps
-        let mut carry_buf: Vec<f32> = Vec::with_capacity(KYUTAI_CHUNK_SAMPLES * 4);
+        // Carry buffer: accumulates resampled samples between STT steps
+        let stt_chunk = self.transcriber.as_ref().unwrap().chunk_samples();
+        let mut carry_buf: Vec<f32> = Vec::with_capacity(stt_chunk * 4);
 
         // Accumulated words from STT
         let mut accumulated_words: Vec<String> = Vec::new();
@@ -566,7 +568,7 @@ impl DictationPipeline {
     /// Pad the carry buffer with zeros and run one final step to flush any
     /// partial word the model is accumulating.
     fn flush_carry_buf(
-        transcriber: &mut KyutaiTranscriber,
+        transcriber: &mut Transcriber,
         carry_buf: &mut Vec<f32>,
         accumulated_words: &mut Vec<String>,
     ) {
@@ -574,7 +576,8 @@ impl DictationPipeline {
             return;
         }
         // Pad to a full chunk
-        carry_buf.resize(KYUTAI_CHUNK_SAMPLES, 0.0);
+        let chunk = transcriber.chunk_samples();
+        carry_buf.resize(chunk, 0.0);
         if let Ok(words) = transcriber.step(carry_buf) {
             accumulated_words.extend(words);
         }
@@ -607,16 +610,17 @@ impl DictationPipeline {
         }
     }
 
-    /// Drain carry_buf through the STT model in KYUTAI_CHUNK_SAMPLES steps,
+    /// Drain carry_buf through the STT model in chunk_samples() steps,
     /// accumulating recognised words and emitting partial transcripts.
     fn drain_carry_through_stt(
-        transcriber: &mut KyutaiTranscriber,
+        transcriber: &mut Transcriber,
         carry_buf: &mut Vec<f32>,
         accumulated_words: &mut Vec<String>,
         event_tx: &mpsc::Sender<PipelineEvent>,
     ) {
-        while carry_buf.len() >= KYUTAI_CHUNK_SAMPLES {
-            let slice: Vec<f32> = carry_buf.drain(..KYUTAI_CHUNK_SAMPLES).collect();
+        let chunk = transcriber.chunk_samples();
+        while carry_buf.len() >= chunk {
+            let slice: Vec<f32> = carry_buf.drain(..chunk).collect();
             match transcriber.step(&slice) {
                 Ok(words) if !words.is_empty() => {
                     accumulated_words.extend(words);

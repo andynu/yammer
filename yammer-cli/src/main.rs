@@ -10,14 +10,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use yammer_audio::{AudioCapture, resample_to_kyutai, resample_to_whisper, write_wav, Vad, VadEvent, VadProcessor, WHISPER_SAMPLE_RATE};
+use yammer_audio::{AudioCapture, AudioResampler, resample_to_whisper, write_wav, Vad, VadEvent, VadProcessor, WHISPER_SAMPLE_RATE};
 use yammer_core::{
     format_bytes, get_default_models, get_model_registry, Config, DownloadManager, ModelStatus,
     ModelType, VerifiedHashes,
 };
 use yammer_llm::Corrector;
+#[cfg(target_os = "macos")]
+use yammer_output::test_output_roundtrip;
 use yammer_output::{TextOutput, OutputMethod};
-use yammer_stt::{KyutaiTranscriber, load_wav_24k};
+use yammer_stt::{Transcriber, SttBackend, load_wav_resampled};
 
 /// Action to perform for config command
 enum ConfigAction {
@@ -178,9 +180,38 @@ enum Commands {
         #[arg(long)]
         clipboard: bool,
 
+        /// Use osascript keystroke injection (macOS only, no Accessibility permission needed)
+        #[arg(long)]
+        osascript: bool,
+
         /// Delay before typing (seconds, to switch focus)
         #[arg(long, default_value = "2")]
         delay: u64,
+    },
+
+    /// Test text output with automated round-trip verification (macOS only).
+    /// Opens TextEdit, injects text, reads it back, and compares.
+    /// Default (--direct) needs NO permissions. Other methods need terminal Accessibility.
+    TestOutput {
+        /// Text to test with (default: "Hello from yammer test")
+        #[arg(default_value = "Hello from yammer test")]
+        text: String,
+
+        /// Use clipboard paste method (needs terminal Accessibility permission)
+        #[arg(long)]
+        clipboard: bool,
+
+        /// Use osascript keystroke method (needs terminal Accessibility permission)
+        #[arg(long)]
+        osascript: bool,
+
+        /// Use direct AppleScript to TextEdit (NO permissions needed, default)
+        #[arg(long)]
+        direct: bool,
+
+        /// Run all available methods and report results
+        #[arg(long)]
+        all: bool,
     },
 
     /// Show or initialize configuration
@@ -255,8 +286,11 @@ async fn main() -> Result<()> {
         Some(Commands::GpuInfo { watch }) => {
             gpu_info(watch).await?;
         }
-        Some(Commands::TypeText { text, clipboard, delay }) => {
-            type_text_cmd(text, clipboard, delay).await?;
+        Some(Commands::TypeText { text, clipboard, osascript, delay }) => {
+            type_text_cmd(text, clipboard, osascript, delay).await?;
+        }
+        Some(Commands::TestOutput { text, clipboard, osascript, direct, all }) => {
+            test_output_cmd(text, clipboard, osascript, direct, all)?;
         }
         Some(Commands::Config { show, path, init }) => {
             let action = if path {
@@ -721,13 +755,14 @@ async fn transcribe_file(file: PathBuf, model_repo: Option<String>, _timestamps:
     let config = yammer_core::Config::load();
     let repo = model_repo.unwrap_or_else(|| config.stt_model_repo());
 
-    println!("Loading Kyutai STT model ({})...", repo);
-    let mut transcriber = KyutaiTranscriber::new(&repo)?;
+    println!("Loading STT model ({})...", repo);
+    let mut transcriber = Transcriber::new(&repo)?;
+    let sr = transcriber.sample_rate();
 
     println!("Loading audio from {:?}...", file);
-    let samples = load_wav_24k(&file)?;
+    let samples = load_wav_resampled(&file, sr)?;
 
-    println!("Transcribing {} samples ({:.1}s)...\n", samples.len(), samples.len() as f32 / 24000.0);
+    println!("Transcribing {} samples ({:.1}s)...\n", samples.len(), samples.len() as f32 / sr as f32);
     let text = transcriber.transcribe_buffer(&samples)?;
 
     println!("{}", text);
@@ -813,8 +848,8 @@ async fn dictate(
     let config = yammer_core::Config::load();
     let repo = model_repo.unwrap_or_else(|| config.stt_model_repo());
 
-    eprintln!("Loading Kyutai STT model ({})...", repo);
-    let transcriber = Arc::new(std::sync::Mutex::new(KyutaiTranscriber::new(&repo)?));
+    eprintln!("Loading STT model ({})...", repo);
+    let transcriber = Arc::new(std::sync::Mutex::new(Transcriber::new(&repo)?));
 
     // Set up audio capture
     let capture = if let Some(ref device_name) = device {
@@ -907,20 +942,32 @@ async fn dictate(
                     continue;
                 }
 
-                // Resample to 24 kHz for Kyutai
-                let samples_24k = match resample_to_kyutai(&samples, native_rate) {
-                    Ok(resampled) => resampled,
-                    Err(e) => {
-                        eprintln!("\r\x1b[KResample error: {}", e);
-                        current_state = DictateState::Listening;
-                        continue;
+                // Resample to STT backend's expected rate
+                let stt_rate = transcriber.lock().unwrap().sample_rate();
+                let resampled = if native_rate != stt_rate {
+                    match AudioResampler::new(native_rate, stt_rate) {
+                        Ok(mut r) => match r.resample_buffer(&samples) {
+                            Ok(out) => out,
+                            Err(e) => {
+                                eprintln!("\r\x1b[KResample error: {}", e);
+                                current_state = DictateState::Listening;
+                                continue;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("\r\x1b[KResample error: {}", e);
+                            current_state = DictateState::Listening;
+                            continue;
+                        }
                     }
+                } else {
+                    samples.clone()
                 };
 
                 // Transcribe via batch API
                 let transcriber_clone = transcriber.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    transcriber_clone.lock().unwrap().transcribe_buffer(&samples_24k)
+                    transcriber_clone.lock().unwrap().transcribe_buffer(&resampled)
                 }).await?;
 
                 match result {
@@ -1083,11 +1130,16 @@ async fn gpu_info(watch: bool) -> Result<()> {
     Ok(())
 }
 
-async fn type_text_cmd(text: String, clipboard: bool, delay: u64) -> Result<()> {
+async fn type_text_cmd(text: String, clipboard: bool, osascript: bool, delay: u64) -> Result<()> {
     // Check text output backend is available
     TextOutput::check_backend()?;
 
-    let method = if clipboard {
+    let method = if osascript {
+        #[cfg(target_os = "macos")]
+        { OutputMethod::Osascript }
+        #[cfg(not(target_os = "macos"))]
+        { anyhow::bail!("--osascript is only available on macOS"); }
+    } else if clipboard {
         OutputMethod::Clipboard
     } else {
         OutputMethod::Type
@@ -1112,6 +1164,66 @@ async fn type_text_cmd(text: String, clipboard: bool, delay: u64) -> Result<()> 
     println!("Done.");
 
     Ok(())
+}
+
+fn test_output_cmd(text: String, clipboard: bool, osascript: bool, direct: bool, all: bool) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (text, clipboard, osascript, direct, all);
+        anyhow::bail!("test-output is only available on macOS (uses TextEdit for round-trip verification)");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        println!("Automated text output round-trip test");
+        println!("Text: {:?}\n", text);
+
+        // Each entry: (Option<OutputMethod>, display_name)
+        // None = direct AppleScript (no permissions needed)
+        let methods: Vec<(Option<OutputMethod>, &str)> = if all {
+            vec![
+                (None, "direct AppleScript (no permissions)"),
+                (Some(OutputMethod::Osascript), "osascript keystroke"),
+                (Some(OutputMethod::Clipboard), "clipboard + Cmd+V"),
+                (Some(OutputMethod::Type), "type (enigo)"),
+            ]
+        } else if osascript {
+            vec![(Some(OutputMethod::Osascript), "osascript keystroke")]
+        } else if clipboard {
+            vec![(Some(OutputMethod::Clipboard), "clipboard + Cmd+V")]
+        } else if direct {
+            vec![(None, "direct AppleScript (no permissions)")]
+        } else {
+            // Default: direct (no permissions needed)
+            vec![(None, "direct AppleScript (no permissions)")]
+        };
+
+        let mut passed = 0;
+        let mut failed = 0;
+
+        for (method, name) in &methods {
+            print!("Testing {} method... ", name);
+            match test_output_roundtrip(&text, *method) {
+                Ok(()) => {
+                    println!("PASS");
+                    passed += 1;
+                }
+                Err(e) => {
+                    println!("FAIL: {}", e);
+                    failed += 1;
+                }
+            }
+            // Brief pause between tests
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        println!("\nResults: {} passed, {} failed", passed, failed);
+        if failed > 0 {
+            anyhow::bail!("{} test(s) failed", failed);
+        }
+
+        Ok(())
+    }
 }
 
 fn config_cmd(action: ConfigAction) -> Result<()> {

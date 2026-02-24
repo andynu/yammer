@@ -3,8 +3,9 @@
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::Activation;
-use rubato::{FftFixedIn, Resampler};
 use tracing::{debug, info, warn};
+
+use crate::SttBackend;
 
 /// PCM chunk size required by the Kyutai/Mimi codec: 80 ms at 24 kHz
 pub const KYUTAI_CHUNK_SAMPLES: usize = 1920;
@@ -213,16 +214,31 @@ impl KyutaiTranscriber {
         })
     }
 
-    /// Feed exactly [`KYUTAI_CHUNK_SAMPLES`] PCM samples at 24 kHz.
-    /// Returns any new words decoded in this step (empty if none yet).
-    pub fn step(&mut self, pcm_24k: &[f32]) -> Result<Vec<String>> {
+    fn run_step(
+        state: &mut moshi::asr::State,
+        pcm: &[f32],
+        device: &Device,
+    ) -> Result<Vec<moshi::asr::AsrMsg>> {
+        let tensor = Tensor::new(pcm, device)
+            .context("Failed to create PCM tensor")?
+            .reshape((1, 1, ()))
+            .context("Failed to reshape PCM tensor")?;
+
+        state
+            .step_pcm(tensor, None, &().into(), |_, _, _| ())
+            .context("step_pcm failed")
+    }
+}
+
+impl SttBackend for KyutaiTranscriber {
+    fn step(&mut self, pcm: &[f32]) -> Result<Vec<String>> {
         debug_assert_eq!(
-            pcm_24k.len(),
+            pcm.len(),
             KYUTAI_CHUNK_SAMPLES,
             "step() requires exactly {KYUTAI_CHUNK_SAMPLES} samples"
         );
 
-        let msgs = Self::run_step(&mut self.state, pcm_24k, &self.device)?;
+        let msgs = Self::run_step(&mut self.state, pcm, &self.device)?;
         let mut words = Vec::new();
 
         for msg in msgs {
@@ -241,107 +257,32 @@ impl KyutaiTranscriber {
         Ok(words)
     }
 
-    /// Transcribe a complete buffer of 24 kHz PCM samples in one call.
-    ///
-    /// Useful for batch/offline transcription (e.g. from a file).  The buffer is
-    /// processed in [`KYUTAI_CHUNK_SAMPLES`]-sample chunks; any remaining samples
-    /// shorter than a full chunk are zero-padded.
-    pub fn transcribe_buffer(&mut self, pcm_24k: &[f32]) -> Result<String> {
+    fn transcribe_buffer(&mut self, pcm: &[f32]) -> Result<String> {
+        let chunk = self.chunk_samples();
         let mut words = Vec::new();
 
         let mut offset = 0;
-        while offset + KYUTAI_CHUNK_SAMPLES <= pcm_24k.len() {
-            let chunk = &pcm_24k[offset..offset + KYUTAI_CHUNK_SAMPLES];
-            words.extend(self.step(chunk)?);
-            offset += KYUTAI_CHUNK_SAMPLES;
+        while offset + chunk <= pcm.len() {
+            let slice = &pcm[offset..offset + chunk];
+            words.extend(self.step(slice)?);
+            offset += chunk;
         }
 
         // Pad and flush remaining samples
-        if offset < pcm_24k.len() {
-            let mut chunk = pcm_24k[offset..].to_vec();
-            chunk.resize(KYUTAI_CHUNK_SAMPLES, 0.0);
-            words.extend(self.step(&chunk)?);
+        if offset < pcm.len() {
+            let mut padded = pcm[offset..].to_vec();
+            padded.resize(chunk, 0.0);
+            words.extend(self.step(&padded)?);
         }
 
         Ok(words.join(" "))
     }
 
-    fn run_step(
-        state: &mut moshi::asr::State,
-        pcm: &[f32],
-        device: &Device,
-    ) -> Result<Vec<moshi::asr::AsrMsg>> {
-        let tensor = Tensor::new(pcm, device)
-            .context("Failed to create PCM tensor")?
-            .reshape((1, 1, ()))
-            .context("Failed to reshape PCM tensor")?;
-
-        state
-            .step_pcm(tensor, None, &().into(), |_, _, _| ())
-            .context("step_pcm failed")
-    }
-}
-
-/// Load a WAV file and resample it to 24 kHz mono f32 suitable for
-/// [`KyutaiTranscriber::transcribe_buffer`].
-pub fn load_wav_24k(path: &std::path::Path) -> Result<Vec<f32>> {
-    let reader = hound::WavReader::open(path)
-        .with_context(|| format!("Failed to open WAV: {}", path.display()))?;
-    let spec = reader.spec();
-
-    // Decode to f32 mono
-    let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Int => {
-            let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-            reader
-                .into_samples::<i32>()
-                .filter_map(|s| s.ok())
-                .map(|s| s as f32 / max)
-                .collect()
-        }
-        hound::SampleFormat::Float => {
-            reader
-                .into_samples::<f32>()
-                .filter_map(|s| s.ok())
-                .collect()
-        }
-    };
-
-    // Mix to mono if needed
-    let mono: Vec<f32> = if spec.channels > 1 {
-        samples
-            .chunks(spec.channels as usize)
-            .map(|frame| frame.iter().sum::<f32>() / spec.channels as f32)
-            .collect()
-    } else {
-        samples
-    };
-
-    // Resample to 24 kHz if needed
-    if spec.sample_rate == KYUTAI_SAMPLE_RATE {
-        return Ok(mono);
+    fn chunk_samples(&self) -> usize {
+        KYUTAI_CHUNK_SAMPLES
     }
 
-    let chunk_size = 1024usize;
-    let mut resampler = FftFixedIn::<f64>::new(
-        spec.sample_rate as usize,
-        KYUTAI_SAMPLE_RATE as usize,
-        chunk_size,
-        2,
-        1,
-    )
-    .context("Failed to create resampler")?;
-
-    let mut output = Vec::new();
-    for chunk in mono.chunks(chunk_size) {
-        let mut padded = chunk.to_vec();
-        padded.resize(chunk_size, 0.0);
-        let input_f64: Vec<f64> = padded.iter().map(|&s| s as f64).collect();
-        let out = resampler
-            .process(&[input_f64], None)
-            .context("Resampling failed")?;
-        output.extend(out[0].iter().map(|&s| s as f32));
+    fn sample_rate(&self) -> u32 {
+        KYUTAI_SAMPLE_RATE
     }
-
-    Ok(output)
 }
