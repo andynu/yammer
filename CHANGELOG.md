@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.1] - 2026-02-25
+
+### Fixed
+- Silence timeout no longer fires in toggle mode (hotkey or record button).
+  Dictation now waits for an explicit stop instead of auto-discarding after 5
+  seconds of silence.
+
+### Changed
+- Release builds default to warn-level logging with no log file. Set
+  `RUST_LOG=yammer=debug` for full diagnostics and file logging to
+  `~/.local/share/yammer/yammer.log`. Debug builds retain full logging.
+
 ## [0.4.0] - 2026-02-17
 
 ### Changed
