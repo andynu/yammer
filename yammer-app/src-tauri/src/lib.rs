@@ -316,8 +316,21 @@ async fn initialize_pipeline(
 async fn start_dictation(
     state: State<'_, AppState>,
     app: AppHandle,
+    disable_silence_timeout: Option<bool>,
 ) -> Result<(), String> {
-    info!("Start dictation command received");
+    start_dictation_inner(&state, &app, disable_silence_timeout.unwrap_or(false)).await
+}
+
+/// Inner implementation for start_dictation.
+/// When `disable_silence_timeout` is true, the silence timeout is suppressed
+/// for this recording session (used in toggle mode where the user explicitly
+/// stops recording).
+async fn start_dictation_inner(
+    state: &AppState,
+    app: &AppHandle,
+    disable_silence_timeout: bool,
+) -> Result<(), String> {
+    info!("Start dictation command received (silence_timeout disabled: {})", disable_silence_timeout);
 
     // Cancel any pending idle timer since we're about to use the pipeline
     {
@@ -375,6 +388,11 @@ async fn start_dictation(
                 // Set the paste target so output refocuses the user's window
                 let target = state.paste_target.lock().ok().and_then(|g| g.clone());
                 p.set_target_window(target);
+
+                // In toggle mode, disable silence timeout — user will explicitly stop
+                if disable_silence_timeout {
+                    p.set_silence_timeout_override(0);
+                }
 
                 // Get cancel/discard handles while we have pipeline lock
                 let cancel_handle = p.get_cancel_handle();
@@ -511,7 +529,8 @@ async fn toggle_dictation(
         stop_dictation(state).await?;
         Ok(false) // Now stopped
     } else {
-        start_dictation(state, app).await?;
+        // Toggle mode: disable silence timeout since user will explicitly stop
+        start_dictation_inner(&state, &app, true).await?;
         Ok(true) // Now running
     }
 }
@@ -624,13 +643,32 @@ fn simulate_audio(app: AppHandle) -> Result<(), String> {
 /// Initialize and run the Tauri application
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("yammer=debug".parse().unwrap())
-                .add_directive("yammer_app=debug".parse().unwrap())
-        )
+    // Initialize tracing — write to both stderr and a log file so we can
+    // diagnose issues when launched from the desktop entry (no terminal).
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("yammer");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_file = std::fs::File::create(log_dir.join("yammer.log"))
+        .expect("Failed to create log file");
+
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive("yammer=debug".parse().unwrap())
+        .add_directive("yammer_app=debug".parse().unwrap());
+
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr);
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(std::sync::Mutex::new(log_file));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(stderr_layer)
+        .with(file_layer)
         .init();
 
     info!("Starting Yammer application");

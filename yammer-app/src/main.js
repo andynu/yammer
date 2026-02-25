@@ -592,7 +592,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.log('Starting dictation (from hidden window)');
 
     try {
-      await invoke('start_dictation');
+      await invoke('start_dictation', { disableSilenceTimeout: true });
       console.log('Dictation started');
     } catch (e) {
       console.error('Start dictation error:', e);

@@ -97,6 +97,8 @@ pub struct DictationPipeline {
     audio_capture: Option<AudioCapture>,
     /// Window ID to refocus before text output (captured at activation time)
     target_window: Option<String>,
+    /// One-shot override for silence timeout (consumed by next run_blocking)
+    silence_timeout_override: Option<u32>,
 }
 
 impl DictationPipeline {
@@ -111,12 +113,20 @@ impl DictationPipeline {
             event_tx,
             audio_capture: None,
             target_window: None,
+            silence_timeout_override: None,
         }
     }
 
     /// Set the target window to refocus before text output
     pub fn set_target_window(&mut self, window_id: Option<String>) {
         self.target_window = window_id;
+    }
+
+    /// Override the silence timeout for the next recording session only.
+    /// Resets to the configured default after `run_blocking()` completes.
+    /// Pass 0 to disable.
+    pub fn set_silence_timeout_override(&mut self, seconds: u32) {
+        self.silence_timeout_override = Some(seconds);
     }
 
     /// Initialize the pipeline (load models)
@@ -394,9 +404,11 @@ impl DictationPipeline {
         // VAD for audio level + speech detection
         let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
 
-        // Silence timeout tracking
-        let silence_timeout = if self.config.silence_timeout_seconds > 0 {
-            Some(std::time::Duration::from_secs(self.config.silence_timeout_seconds as u64))
+        // Silence timeout tracking (one-shot override consumed here)
+        let silence_seconds = self.silence_timeout_override.take()
+            .unwrap_or(self.config.silence_timeout_seconds);
+        let silence_timeout = if silence_seconds > 0 {
+            Some(std::time::Duration::from_secs(silence_seconds as u64))
         } else {
             None
         };
