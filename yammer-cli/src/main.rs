@@ -546,7 +546,8 @@ fn list_devices(verbose: bool) -> Result<()> {
 
     for device in devices {
         let default_marker = if device.is_default { " (default)" } else { "" };
-        println!("  {}{}", device.name, default_marker);
+        println!("  {}{}", device.display_name, default_marker);
+        println!("    Device: {}", device.name);
 
         if verbose {
             // Verbose mode: show all configs

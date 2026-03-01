@@ -2,6 +2,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, SampleFormat, Stream, StreamConfig};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -70,8 +71,10 @@ pub type AudioResult<T> = Result<T, AudioError>;
 /// Information about an audio input device
 #[derive(Debug, Clone)]
 pub struct InputDeviceInfo {
-    /// Device name
+    /// Device name (raw ALSA identifier, e.g. "hw:CARD=PCH,DEV=0")
     pub name: String,
+    /// Human-readable description from ALSA hints (e.g. "HDA Intel PCH, ALC888-VD Analog")
+    pub display_name: String,
     /// Whether this is the default device
     pub is_default: bool,
     /// Supported configurations
@@ -163,11 +166,38 @@ impl AudioCapture {
         })
     }
 
+    /// Build a map from ALSA device name to human-readable description
+    /// using the ALSA hint API.
+    #[cfg(target_os = "linux")]
+    fn alsa_device_descriptions() -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        let Ok(hints) = alsa::device_name::HintIter::new(None, &std::ffi::CString::new("pcm").unwrap()) else {
+            return map;
+        };
+        for hint in hints {
+            let Some(name) = hint.name else { continue };
+            // Filter to input-capable devices (direction None means both, 1 means Capture)
+            if hint.direction.is_some() && hint.direction != Some(alsa::Direction::Capture) {
+                continue;
+            }
+            if let Some(desc) = hint.desc {
+                // The desc often has newlines separating card and device info;
+                // join them with ", " for a single-line display.
+                let oneline = desc.replace('\n', ", ");
+                map.insert(name, oneline);
+            }
+        }
+        map
+    }
+
     /// List available input devices
     pub fn list_devices() -> AudioResult<Vec<InputDeviceInfo>> {
         // Suppress ALSA/JACK probe noise on stderr
         #[cfg(target_os = "linux")]
         let _suppress = StderrSuppressor::new();
+
+        #[cfg(target_os = "linux")]
+        let descriptions = Self::alsa_device_descriptions();
 
         let host = cpal::default_host();
         let default_name = host
@@ -178,6 +208,15 @@ impl AudioCapture {
         for device in host.input_devices().map_err(|e| AudioError::Device(e.to_string()))? {
             let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
             let is_default = default_name.as_ref().map(|d| d == &name).unwrap_or(false);
+
+            #[cfg(target_os = "linux")]
+            let display_name = descriptions
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| name.clone());
+
+            #[cfg(not(target_os = "linux"))]
+            let display_name = name.clone();
 
             let mut configs = Vec::new();
             if let Ok(supported_configs) = device.supported_input_configs() {
@@ -193,6 +232,7 @@ impl AudioCapture {
 
             devices.push(InputDeviceInfo {
                 name,
+                display_name,
                 is_default,
                 configs,
             });
@@ -558,6 +598,7 @@ mod tests {
     fn test_input_device_info_debug_clone() {
         let info = InputDeviceInfo {
             name: "Test Device".to_string(),
+            display_name: "Test Device Description".to_string(),
             is_default: true,
             configs: vec![],
         };
