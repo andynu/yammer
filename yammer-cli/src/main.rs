@@ -319,7 +319,6 @@ async fn find_downloaded_model(model_type: ModelType, use_stderr: bool) -> Resul
     }
 
     let model_type_str = match model_type {
-        ModelType::Whisper => "Whisper",
         ModelType::Llm => "LLM",
     };
     let msg = format!("No {} model found. Download one first:\n  yammer download-models", model_type_str);

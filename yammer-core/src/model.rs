@@ -10,7 +10,7 @@ pub struct ModelInfo {
     pub id: String,
     /// Human-readable name
     pub name: String,
-    /// Model type (whisper, llm)
+    /// Model type (llm)
     pub model_type: ModelType,
     /// URL to download from
     pub url: String,
@@ -26,14 +26,12 @@ pub struct ModelInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelType {
-    Whisper,
     Llm,
 }
 
 impl std::fmt::Display for ModelType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ModelType::Whisper => write!(f, "whisper"),
             ModelType::Llm => write!(f, "llm"),
         }
     }
@@ -55,34 +53,6 @@ pub enum ModelStatus {
 /// Built-in model registry with known models
 pub fn get_model_registry() -> Vec<ModelInfo> {
     vec![
-        // Whisper models (GGML format from HuggingFace)
-        ModelInfo {
-            id: "whisper-tiny.en".to_string(),
-            name: "Whisper Tiny (English)".to_string(),
-            model_type: ModelType::Whisper,
-            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin".to_string(),
-            size_bytes: 77_704_715, // ~74MB
-            sha256: None, // Will log actual SHA256 on first download
-            filename: "ggml-tiny.en.bin".to_string(),
-        },
-        ModelInfo {
-            id: "whisper-base.en".to_string(),
-            name: "Whisper Base (English)".to_string(),
-            model_type: ModelType::Whisper,
-            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin".to_string(),
-            size_bytes: 147_951_465, // ~141MB
-            sha256: None, // Will log actual SHA256 on first download
-            filename: "ggml-base.en.bin".to_string(),
-        },
-        ModelInfo {
-            id: "whisper-small.en".to_string(),
-            name: "Whisper Small (English)".to_string(),
-            model_type: ModelType::Whisper,
-            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin".to_string(),
-            size_bytes: 487_601_929, // ~465MB
-            sha256: None, // TODO: Fetch from server or verify after download
-            filename: "ggml-small.en.bin".to_string(),
-        },
         // LLM models (GGUF format)
         ModelInfo {
             id: "tinyllama-1.1b".to_string(),
@@ -131,5 +101,5 @@ pub fn get_model_registry() -> Vec<ModelInfo> {
 
 /// Get default models for a fresh installation
 pub fn get_default_models() -> Vec<&'static str> {
-    vec!["whisper-base.en", "tinyllama-1.1b"]
+    vec!["tinyllama-1.1b"]
 }
