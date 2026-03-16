@@ -6,7 +6,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use yammer_audio::{AudioCapture, VadProcessor, resample_to_kyutai, Vad};
+use yammer_audio::{AudioCapture, AudioResampler, VadProcessor, Vad, KYUTAI_SAMPLE_RATE};
 use yammer_output::{TextOutput, OutputMethod};
 use yammer_stt::{KyutaiTranscriber, KYUTAI_CHUNK_SAMPLES};
 use yammer_llm::Corrector;
@@ -414,6 +414,19 @@ impl DictationPipeline {
         };
         let recording_start = Instant::now();
 
+        // Persistent resampler: reuse across chunks to maintain filter continuity
+        // and avoid zero-padding artifacts at every chunk boundary.
+        let needs_resample = input_sample_rate != KYUTAI_SAMPLE_RATE;
+        let mut resampler = if needs_resample {
+            Some(AudioResampler::new(input_sample_rate, KYUTAI_SAMPLE_RATE)
+                .map_err(|e| format!("Failed to create resampler: {}", e))?)
+        } else {
+            None
+        };
+        // Raw input carry buffer: accumulates device-rate samples between chunks
+        // so we only feed complete resampler frames (no zero-padding mid-stream)
+        let mut raw_carry: Vec<f32> = Vec::new();
+
         // Carry buffer: accumulates resampled 24 kHz samples between chunks
         let mut carry_buf: Vec<f32> = Vec::with_capacity(KYUTAI_CHUNK_SAMPLES * 4);
 
@@ -434,9 +447,8 @@ impl DictationPipeline {
                 );
                 // Drain any buffered audio chunks so we don't lose the last word
                 while let Ok(chunk) = rx.try_recv() {
-                    let chunk_24k = resample_to_kyutai(&chunk, input_sample_rate)
+                    Self::resample_chunk(&chunk, &mut resampler, &mut raw_carry, &mut carry_buf)
                         .map_err(|e| format!("Resampling failed: {}", e))?;
-                    carry_buf.extend_from_slice(&chunk_24k);
                     while carry_buf.len() >= KYUTAI_CHUNK_SAMPLES {
                         let slice: Vec<f32> = carry_buf.drain(..KYUTAI_CHUNK_SAMPLES).collect();
                         if let Some(ref mut t) = self.transcriber {
@@ -446,7 +458,8 @@ impl DictationPipeline {
                         }
                     }
                 }
-                // Flush remaining carry buffer as one last step
+                // Flush remaining raw carry through resampler, then flush carry_buf
+                Self::flush_resampler(&mut resampler, &mut raw_carry, &mut carry_buf);
                 if let Some(ref mut t) = self.transcriber {
                     Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
                 }
@@ -473,10 +486,9 @@ impl DictationPipeline {
                 }
             }
 
-            // Resample to 24 kHz and extend carry buffer
-            let chunk_24k = resample_to_kyutai(&chunk, input_sample_rate)
+            // Resample to 24 kHz using persistent resampler (no zero-padding mid-stream)
+            Self::resample_chunk(&chunk, &mut resampler, &mut raw_carry, &mut carry_buf)
                 .map_err(|e| format!("Resampling failed: {}", e))?;
-            carry_buf.extend_from_slice(&chunk_24k);
 
             // Drain carry buffer in 1920-sample steps
             while carry_buf.len() >= KYUTAI_CHUNK_SAMPLES {
@@ -501,6 +513,7 @@ impl DictationPipeline {
                 let elapsed = recording_start.elapsed().as_secs() as u32;
                 if elapsed >= max_seconds {
                     warn!("Recording timeout ({}s max)", max_seconds);
+                    Self::flush_resampler(&mut resampler, &mut raw_carry, &mut carry_buf);
                     if let Some(ref mut t) = self.transcriber {
                         Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
                     }
@@ -522,6 +535,56 @@ impl DictationPipeline {
         self.send_transcript(final_text.clone(), self.corrector.is_some());
 
         Ok(final_text)
+    }
+
+    /// Resample a chunk of device-rate audio into the 24 kHz carry buffer.
+    ///
+    /// Uses a persistent resampler (if resampling is needed) and a raw input
+    /// carry buffer so that only complete resampler frames are processed — no
+    /// zero-padding artifacts mid-stream.
+    fn resample_chunk(
+        chunk: &[f32],
+        resampler: &mut Option<AudioResampler>,
+        raw_carry: &mut Vec<f32>,
+        carry_buf: &mut Vec<f32>,
+    ) -> Result<(), String> {
+        match resampler {
+            Some(ref mut r) => {
+                raw_carry.extend_from_slice(chunk);
+                let frame_size = r.input_frames_next();
+                while raw_carry.len() >= frame_size {
+                    let frame: Vec<f32> = raw_carry.drain(..frame_size).collect();
+                    let resampled = r.resample(&frame)
+                        .map_err(|e| format!("Resampling failed: {}", e))?;
+                    carry_buf.extend_from_slice(&resampled);
+                }
+                Ok(())
+            }
+            None => {
+                // No resampling needed — input is already at 24 kHz
+                carry_buf.extend_from_slice(chunk);
+                Ok(())
+            }
+        }
+    }
+
+    /// Flush remaining raw samples through the resampler (zero-padded to a
+    /// complete frame). Only called at end-of-recording.
+    fn flush_resampler(
+        resampler: &mut Option<AudioResampler>,
+        raw_carry: &mut Vec<f32>,
+        carry_buf: &mut Vec<f32>,
+    ) {
+        if let Some(ref mut r) = resampler {
+            if !raw_carry.is_empty() {
+                let frame_size = r.input_frames_next();
+                raw_carry.resize(frame_size, 0.0);
+                if let Ok(resampled) = r.resample(raw_carry) {
+                    carry_buf.extend_from_slice(&resampled);
+                }
+                raw_carry.clear();
+            }
+        }
     }
 
     /// Pad the carry buffer with zeros and run one final step to flush any
