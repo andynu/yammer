@@ -651,7 +651,9 @@ impl DictationPipeline {
             return Ok(());
         }
 
-        info!("Outputting text: {:?}", text);
+        // Append trailing space so consecutive dictations don't squish words
+        let text_with_space = format!("{} ", text);
+        info!("Outputting text: {:?}", text_with_space);
 
         let output = TextOutput::with_options(
             self.config.output_method,
@@ -659,7 +661,7 @@ impl DictationPipeline {
         )
         .with_target_window(self.target_window.clone());
 
-        match output.output(text) {
+        match output.output(&text_with_space) {
             Ok(()) => {
                 info!("Text output successful");
             }
