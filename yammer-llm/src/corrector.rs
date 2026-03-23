@@ -55,13 +55,16 @@ pub struct CorrectionResult {
 
 /// The prompt template for text correction
 /// Uses few-shot examples to guide the model on expected output format
-const CORRECTION_PROMPT: &str = r#"Fix transcription errors. Add punctuation (periods, commas, apostrophes). Fix capitalization. Don't rephrase.
+const CORRECTION_PROMPT: &str = r#"Fix transcription errors. Add punctuation (periods, commas, apostrophes). Fix capitalization. Split words that are stuck together. Don't rephrase.
 
 Input: im going to the store do you want anything
 Output: I'm going to the store. Do you want anything?
 
 Input: its raining outside we should bring an umbrella
 Output: It's raining outside. We should bring an umbrella.
+
+Input: Ihope multiple labswill contribute Ihave noidea howshared itwill be
+Output: I hope multiple labs will contribute. I have no idea how shared it will be.
 
 Input: "#;
 

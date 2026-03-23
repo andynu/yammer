@@ -143,14 +143,26 @@ impl AudioCapture {
         })
     }
 
-    /// Create with a specific device by name
+    /// Create with a specific device by name.
+    /// Falls back to the default input device if the named device isn't found
+    /// in cpal's enumeration (common with PipeWire-managed USB devices).
     pub fn with_device(device_name: &str) -> AudioResult<Self> {
         let host = cpal::default_host();
-        let device = host
+        let device = match host
             .input_devices()
             .map_err(|e| AudioError::Device(e.to_string()))?
             .find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
-            .ok_or_else(|| AudioError::Device(format!("Device not found: {}", device_name)))?;
+        {
+            Some(d) => d,
+            None => {
+                warn!(
+                    "Device '{}' not found in cpal enumeration, falling back to default input device",
+                    device_name
+                );
+                host.default_input_device()
+                    .ok_or(AudioError::NoInputDevice)?
+            }
+        };
 
         let supported_config = device
             .default_input_config()
