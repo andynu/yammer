@@ -189,7 +189,10 @@ impl TextOutput {
             self.typing_delay_ms
         );
 
-        let delay_str = self.typing_delay_ms.to_string();
+        // xdotool --delay 0 drops characters (especially spaces) because X11
+        // events arrive faster than apps can process them.  Enforce a minimum.
+        let delay = self.typing_delay_ms.max(2);
+        let delay_str = delay.to_string();
         let status = Command::new("xdotool")
             .args(["type", "--clearmodifiers", "--delay", &delay_str, "--", text])
             .status()?;
@@ -210,9 +213,11 @@ impl TextOutput {
 
         info!("Pasting {} characters via clipboard", text.len());
 
-        // Set clipboard content using xclip
+        // Set PRIMARY selection using xclip (Shift+Insert pastes PRIMARY,
+        // which works reliably across terminals and GUI apps — unlike Ctrl+V
+        // which many terminals ignore or interpret as a control character).
         let mut child = Command::new("xclip")
-            .args(["-selection", "clipboard"])
+            .args(["-selection", "primary"])
             .stdin(std::process::Stdio::piped())
             .spawn()?;
 
@@ -224,20 +229,20 @@ impl TextOutput {
         let status = child.wait()?;
         if !status.success() {
             return Err(OutputError::ClipboardFailed(
-                "xclip failed to set clipboard".into(),
+                "xclip failed to set primary selection".into(),
             ));
         }
 
-        // Small delay to ensure clipboard is set
+        // Small delay to ensure selection is set
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        // Simulate Ctrl+V to paste
+        // Simulate Shift+Insert to paste from PRIMARY selection
         let status = Command::new("xdotool")
-            .args(["key", "--clearmodifiers", "ctrl+v"])
+            .args(["key", "--clearmodifiers", "shift+Insert"])
             .status()?;
 
         if status.success() {
-            debug!("Clipboard paste completed successfully");
+            debug!("Primary selection paste completed successfully");
             Ok(())
         } else {
             let code = status.code().unwrap_or(-1);

@@ -211,9 +211,16 @@ impl KyutaiTranscriber {
         })
     }
 
+    /// Reset the ASR model state, clearing any accumulated context.
+    /// Call this between dictation sessions to prevent state leakage.
+    pub fn reset(&mut self) -> Result<()> {
+        self.state.reset().map_err(|e| anyhow::anyhow!("ASR state reset failed: {}", e))
+    }
+
     /// Feed exactly [`KYUTAI_CHUNK_SAMPLES`] PCM samples at 24 kHz.
-    /// Returns any new words decoded in this step (empty if none yet).
-    pub fn step(&mut self, pcm_24k: &[f32]) -> Result<Vec<String>> {
+    /// Returns raw token IDs from any words recognised in this step.
+    /// Accumulate these and decode with [`decode_tokens`] for correct spacing.
+    pub fn step(&mut self, pcm_24k: &[f32]) -> Result<Vec<u32>> {
         debug_assert_eq!(
             pcm_24k.len(),
             KYUTAI_CHUNK_SAMPLES,
@@ -221,22 +228,27 @@ impl KyutaiTranscriber {
         );
 
         let msgs = Self::run_step(&mut self.state, pcm_24k, &self.device)?;
-        let mut words = Vec::new();
+        let mut tokens = Vec::new();
 
         for msg in msgs {
-            if let moshi::asr::AsrMsg::Word { tokens, .. } = msg {
-                let text = self
-                    .tokenizer
-                    .decode_piece_ids(&tokens)
-                    .unwrap_or_default();
-                if !text.is_empty() {
-                    debug!("Word: {:?}", text);
-                    words.push(text);
+            if let moshi::asr::AsrMsg::Word { tokens: word_tokens, .. } = msg {
+                if !word_tokens.is_empty() {
+                    debug!("Word tokens: {:?}", word_tokens);
+                    tokens.extend(word_tokens);
                 }
             }
         }
 
-        Ok(words)
+        Ok(tokens)
+    }
+
+    /// Decode accumulated token IDs into text.
+    /// SentencePiece handles `▁` → space conversion correctly when given the
+    /// complete sequence, producing proper inter-word spacing.
+    pub fn decode_tokens(&self, tokens: &[u32]) -> String {
+        self.tokenizer
+            .decode_piece_ids(tokens)
+            .unwrap_or_default()
     }
 
     /// Transcribe a complete buffer of 24 kHz PCM samples in one call.
@@ -245,12 +257,12 @@ impl KyutaiTranscriber {
     /// processed in [`KYUTAI_CHUNK_SAMPLES`]-sample chunks; any remaining samples
     /// shorter than a full chunk are zero-padded.
     pub fn transcribe_buffer(&mut self, pcm_24k: &[f32]) -> Result<String> {
-        let mut words = Vec::new();
+        let mut all_tokens: Vec<u32> = Vec::new();
 
         let mut offset = 0;
         while offset + KYUTAI_CHUNK_SAMPLES <= pcm_24k.len() {
             let chunk = &pcm_24k[offset..offset + KYUTAI_CHUNK_SAMPLES];
-            words.extend(self.step(chunk)?);
+            all_tokens.extend(self.step(chunk)?);
             offset += KYUTAI_CHUNK_SAMPLES;
         }
 
@@ -258,10 +270,10 @@ impl KyutaiTranscriber {
         if offset < pcm_24k.len() {
             let mut chunk = pcm_24k[offset..].to_vec();
             chunk.resize(KYUTAI_CHUNK_SAMPLES, 0.0);
-            words.extend(self.step(&chunk)?);
+            all_tokens.extend(self.step(&chunk)?);
         }
 
-        Ok(words.join(" "))
+        Ok(self.decode_tokens(&all_tokens))
     }
 
     fn run_step(

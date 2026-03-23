@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.3] - 2026-03-23
+
+### Fixed
+- **Fix dropped spaces in output**: `xdotool type --delay 0` silently drops
+  characters (especially spaces) on X11. Clipboard mode now uses PRIMARY
+  selection + Shift+Insert, which pastes reliably across terminals and GUI apps.
+  Also enforce a minimum 2ms delay for the `type` output method as a safeguard.
+- **Fix last word cutoff on stop**: When pressing F6 to stop recording, the
+  final word was lost because (a) the audio capture buffer held a partial chunk
+  that never got sent, and (b) the STT model needs silence after speech to emit
+  boundary tokens. Now flushes the capture buffer and feeds ~1s of silence to
+  push the model to emit any pending final word.
+- **Fix session bleed-through**: Reset the ASR model state between dictation
+  sessions so words from a previous session don't leak into the next one.
+- **Fix SentencePiece spacing**: Accumulate raw token IDs and decode as a single
+  sequence instead of decoding per-word and joining with spaces, letting
+  SentencePiece handle all `▁` → space conversion correctly.
+
 ## [0.4.1] - 2026-02-25
 
 ### Fixed

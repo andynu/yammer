@@ -425,6 +425,25 @@ impl AudioCapture {
 pub struct CaptureHandle {
     _stream: Stream,
     is_running: Arc<AtomicBool>,
+    /// Shared buffer with the capture callback — used to flush partial chunks on stop
+    buffer: Arc<std::sync::Mutex<Vec<f32>>>,
+    /// Sender to deliver the flushed partial chunk
+    tx: mpsc::Sender<Vec<f32>>,
+}
+
+impl CaptureHandle {
+    /// Flush any partial audio remaining in the capture buffer.
+    /// Call this before dropping the handle to avoid losing the tail end of audio.
+    pub fn flush(&self) {
+        let mut buf = self.buffer.lock().unwrap();
+        if !buf.is_empty() {
+            let chunk: Vec<f32> = buf.drain(..).collect();
+            debug!("Flushing {} samples from capture buffer", chunk.len());
+            if let Err(e) = self.tx.try_send(chunk) {
+                warn!("Failed to send flushed audio chunk: {}", e);
+            }
+        }
+    }
 }
 
 impl Drop for CaptureHandle {
@@ -461,8 +480,10 @@ impl AudioCapture {
         let tx_f32 = tx.clone();
         let is_running_f32 = is_running.clone();
 
-        // Clone for CaptureHandle - shares the same underlying AtomicBool
+        // Clones for CaptureHandle — shares the same underlying state
         let is_running_handle = is_running.clone();
+        let buffer_handle = buffer.clone();
+        let tx_handle = tx.clone();
 
         // F32 callback - uses _f32 suffixed clones
         let callback_f32 = move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -553,6 +574,8 @@ impl AudioCapture {
             CaptureHandle {
                 _stream: stream,
                 is_running: is_running_handle,
+                buffer: buffer_handle,
+                tx: tx_handle,
             },
             rx,
         ))

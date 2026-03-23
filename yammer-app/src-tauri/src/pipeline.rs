@@ -375,7 +375,7 @@ impl DictationPipeline {
 
         // Set up audio capture
         let fallback_capture: Option<AudioCapture>;
-        let (capture, input_sample_rate, _handle, rx) =
+        let (capture, input_sample_rate, capture_handle, rx) =
             match self.try_start_capture(&self.audio_capture) {
                 Ok((c, sr, h, r)) => (c, sr, h, r),
                 Err(pre_init_err) => {
@@ -430,8 +430,15 @@ impl DictationPipeline {
         // Carry buffer: accumulates resampled 24 kHz samples between chunks
         let mut carry_buf: Vec<f32> = Vec::with_capacity(KYUTAI_CHUNK_SAMPLES * 4);
 
-        // Accumulated words from STT
-        let mut accumulated_words: Vec<String> = Vec::new();
+        // Reset transcriber state to prevent leakage from prior session
+        if let Some(ref mut t) = self.transcriber {
+            if let Err(e) = t.reset() {
+                warn!("Failed to reset transcriber state: {}", e);
+            }
+        }
+
+        // Accumulated token IDs from STT (decoded as a batch for correct spacing)
+        let mut accumulated_tokens: Vec<u32> = Vec::new();
 
         while let Some(chunk) = rx.blocking_recv() {
             // Check discard/cancel before doing any work
@@ -442,9 +449,11 @@ impl DictationPipeline {
 
             if self.is_cancelled() {
                 info!(
-                    "Listening stopped by user, draining remaining audio ({} words so far)",
-                    accumulated_words.len()
+                    "Listening stopped by user, draining remaining audio ({} tokens so far)",
+                    accumulated_tokens.len()
                 );
+                // Flush partial chunk from capture buffer before draining
+                capture_handle.flush();
                 // Drain any buffered audio chunks so we don't lose the last word
                 while let Ok(chunk) = rx.try_recv() {
                     Self::resample_chunk(&chunk, &mut resampler, &mut raw_carry, &mut carry_buf)
@@ -452,8 +461,8 @@ impl DictationPipeline {
                     while carry_buf.len() >= KYUTAI_CHUNK_SAMPLES {
                         let slice: Vec<f32> = carry_buf.drain(..KYUTAI_CHUNK_SAMPLES).collect();
                         if let Some(ref mut t) = self.transcriber {
-                            if let Ok(words) = t.step(&slice) {
-                                accumulated_words.extend(words);
+                            if let Ok(tokens) = t.step(&slice) {
+                                accumulated_tokens.extend(tokens);
                             }
                         }
                     }
@@ -461,7 +470,17 @@ impl DictationPipeline {
                 // Flush remaining raw carry through resampler, then flush carry_buf
                 Self::flush_resampler(&mut resampler, &mut raw_carry, &mut carry_buf);
                 if let Some(ref mut t) = self.transcriber {
-                    Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
+                    Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_tokens);
+
+                    // Feed ~1 second of silence to push the model to emit any
+                    // pending word that hasn't been followed by a boundary token.
+                    let silence = vec![0.0f32; KYUTAI_CHUNK_SAMPLES];
+                    let num_silence_chunks = 13; // ~1.04s at 80ms per chunk
+                    for _ in 0..num_silence_chunks {
+                        if let Ok(tokens) = t.step(&silence) {
+                            accumulated_tokens.extend(tokens);
+                        }
+                    }
                 }
                 break;
             }
@@ -473,14 +492,14 @@ impl DictationPipeline {
             // VAD for speech detection (used for waveform UI, not timeout gating)
             let _events = vad.process(&chunk);
 
-            // Silence timeout: discard if no words transcribed within the timeout.
+            // Silence timeout: discard if no tokens transcribed within the timeout.
             // Uses STT output (not VAD) so it won't misfire when the mic is active
-            // but VAD thresholds don't trigger. Once any word is transcribed, the
+            // but VAD thresholds don't trigger. Once any token is transcribed, the
             // timeout is permanently disabled for this session.
-            if accumulated_words.is_empty() {
+            if accumulated_tokens.is_empty() {
                 if let Some(timeout) = silence_timeout {
                     if recording_start.elapsed() >= timeout {
-                        info!("Silence timeout with no words transcribed, discarding");
+                        info!("Silence timeout with no tokens transcribed, discarding");
                         return Err("No audio recorded".to_string());
                     }
                 }
@@ -494,13 +513,13 @@ impl DictationPipeline {
             while carry_buf.len() >= KYUTAI_CHUNK_SAMPLES {
                 let slice: Vec<f32> = carry_buf.drain(..KYUTAI_CHUNK_SAMPLES).collect();
 
-                let words = self.transcriber.as_mut().unwrap()
-                    .step(&slice)
+                let t = self.transcriber.as_mut().unwrap();
+                let new_tokens = t.step(&slice)
                     .map_err(|e| format!("STT step failed: {}", e))?;
 
-                if !words.is_empty() {
-                    accumulated_words.extend(words);
-                    let partial_text = accumulated_words.join(" ");
+                if !new_tokens.is_empty() {
+                    accumulated_tokens.extend(&new_tokens);
+                    let partial_text = t.decode_tokens(&accumulated_tokens);
                     debug!("Partial transcript: {:?}", partial_text);
                     self.send_transcript(partial_text, true);
                 }
@@ -509,21 +528,20 @@ impl DictationPipeline {
             // Safety max-duration timeout
             let max_seconds = self.config.max_recording_seconds;
             if max_seconds > 0 {
-                let estimated_seconds = accumulated_words.len() as f32 * 0.4; // rough estimate
                 let elapsed = recording_start.elapsed().as_secs() as u32;
                 if elapsed >= max_seconds {
                     warn!("Recording timeout ({}s max)", max_seconds);
                     Self::flush_resampler(&mut resampler, &mut raw_carry, &mut carry_buf);
                     if let Some(ref mut t) = self.transcriber {
-                        Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_words);
+                        Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_tokens);
                     }
-                    let _ = estimated_seconds; // suppress warning
                     break;
                 }
             }
         }
 
-        let final_text = accumulated_words.join(" ");
+        let final_text = self.transcriber.as_ref().unwrap()
+            .decode_tokens(&accumulated_tokens);
 
         if final_text.trim().is_empty() {
             warn!("No speech recognised");
@@ -592,15 +610,15 @@ impl DictationPipeline {
     fn flush_carry_buf(
         transcriber: &mut KyutaiTranscriber,
         carry_buf: &mut Vec<f32>,
-        accumulated_words: &mut Vec<String>,
+        accumulated_tokens: &mut Vec<u32>,
     ) {
         if carry_buf.is_empty() {
             return;
         }
         // Pad to a full chunk
         carry_buf.resize(KYUTAI_CHUNK_SAMPLES, 0.0);
-        if let Ok(words) = transcriber.step(carry_buf) {
-            accumulated_words.extend(words);
+        if let Ok(tokens) = transcriber.step(carry_buf) {
+            accumulated_tokens.extend(tokens);
         }
         carry_buf.clear();
     }
