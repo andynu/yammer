@@ -213,36 +213,40 @@ impl TextOutput {
 
         info!("Pasting {} characters via clipboard", text.len());
 
-        // Set PRIMARY selection using xclip (Shift+Insert pastes PRIMARY,
-        // which works reliably across terminals and GUI apps — unlike Ctrl+V
-        // which many terminals ignore or interpret as a control character).
-        let mut child = Command::new("xclip")
-            .args(["-selection", "primary"])
-            .stdin(std::process::Stdio::piped())
-            .spawn()?;
+        // Set both PRIMARY and CLIPBOARD selections so the dictated text is
+        // available via Shift+Insert (terminals) AND Ctrl+V (GUI apps), and
+        // also replaces whatever was previously in the clipboard.
+        for selection in ["primary", "clipboard"] {
+            let mut child = Command::new("xclip")
+                .args(["-selection", selection])
+                .stdin(std::process::Stdio::piped())
+                .spawn()?;
 
-        if let Some(stdin) = child.stdin.as_mut() {
-            use std::io::Write;
-            stdin.write_all(text.as_bytes())?;
+            if let Some(stdin) = child.stdin.as_mut() {
+                use std::io::Write;
+                stdin.write_all(text.as_bytes())?;
+            }
+
+            let status = child.wait()?;
+            if !status.success() {
+                return Err(OutputError::ClipboardFailed(
+                    format!("xclip failed to set {} selection", selection),
+                ));
+            }
         }
 
-        let status = child.wait()?;
-        if !status.success() {
-            return Err(OutputError::ClipboardFailed(
-                "xclip failed to set primary selection".into(),
-            ));
-        }
-
-        // Small delay to ensure selection is set
+        // Small delay to ensure selections are set
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         // Simulate Shift+Insert to paste from PRIMARY selection
+        // (works reliably across terminals and GUI apps — unlike Ctrl+V
+        // which many terminals ignore or interpret as a control character)
         let status = Command::new("xdotool")
             .args(["key", "--clearmodifiers", "shift+Insert"])
             .status()?;
 
         if status.success() {
-            debug!("Primary selection paste completed successfully");
+            debug!("Clipboard paste completed successfully");
             Ok(())
         } else {
             let code = status.code().unwrap_or(-1);
