@@ -6,6 +6,18 @@
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
+#[cfg(target_os = "linux")]
+mod virtual_keyboard;
+
+/// Prepare the paste backend ahead of the first paste. On Linux this creates
+/// the uinput virtual keyboard, which the compositor needs time to attach.
+pub fn prepare_paste() {
+    #[cfg(target_os = "linux")]
+    if let Err(e) = virtual_keyboard::init() {
+        warn!("uinput virtual keyboard unavailable, paste will use xdotool: {}", e);
+    }
+}
+
 /// Errors that can occur during text output
 #[derive(Error, Debug)]
 pub enum OutputError {
@@ -241,6 +253,14 @@ impl TextOutput {
         // Simulate Shift+Insert to paste from PRIMARY selection
         // (works reliably across terminals and GUI apps — unlike Ctrl+V
         // which many terminals ignore or interpret as a control character)
+        match virtual_keyboard::shift_insert() {
+            Ok(()) => {
+                debug!("Clipboard paste sent via uinput");
+                return Ok(());
+            }
+            Err(e) => warn!("uinput paste failed, falling back to xdotool: {}", e),
+        }
+
         let status = Command::new("xdotool")
             .args(["key", "--clearmodifiers", "shift+Insert"])
             .status()?;

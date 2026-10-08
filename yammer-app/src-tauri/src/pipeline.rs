@@ -134,6 +134,10 @@ impl DictationPipeline {
         info!("Initializing dictation pipeline...");
         info!("STT model repo: {}", self.config.stt_model_repo);
 
+        if self.config.output_method == OutputMethod::Clipboard {
+            yammer_output::prepare_paste();
+        }
+
         // Load Kyutai STT model (auto-selects CUDA if available)
         let t0 = Instant::now();
         match KyutaiTranscriber::new(&self.config.stt_model_repo) {
