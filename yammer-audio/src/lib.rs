@@ -7,6 +7,7 @@
 
 pub mod capture;
 pub mod resample;
+pub mod silent_input;
 pub mod vad;
 
 pub use capture::{
@@ -16,4 +17,5 @@ pub use resample::{
     resample_to_kyutai, AudioResampler, KYUTAI_SAMPLE_RATE,
     resample_to_whisper, WHISPER_SAMPLE_RATE,
 };
+pub use silent_input::SilentInputDetector;
 pub use vad::{Vad, VadConfig, VadEvent, VadProcessor, VadState, DEFAULT_SPEECH_THRESHOLD};

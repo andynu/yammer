@@ -6,10 +6,12 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use yammer_audio::{AudioCapture, AudioResampler, VadProcessor, Vad, KYUTAI_SAMPLE_RATE};
+use yammer_audio::{AudioCapture, AudioResampler, SilentInputDetector, VadProcessor, Vad, KYUTAI_SAMPLE_RATE};
 use yammer_output::{TextOutput, OutputMethod};
 use yammer_stt::{KyutaiTranscriber, KYUTAI_CHUNK_SAMPLES};
 use yammer_llm::Corrector;
+
+const MIC_MUTED: &str = "Microphone is muted (input is pure silence). Unmute it and try again.";
 
 /// Pipeline state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -407,6 +409,7 @@ impl DictationPipeline {
 
         // VAD for audio level + speech detection
         let mut vad = VadProcessor::with_threshold(self.config.vad_threshold as f32);
+        let mut silent_input = SilentInputDetector::new(input_sample_rate, 1.0);
 
         // Silence timeout tracking (one-shot override consumed here)
         let silence_seconds = self.silence_timeout_override.take()
@@ -492,6 +495,11 @@ impl DictationPipeline {
             // Audio level for the waveform visualisation (on raw device-rate samples)
             let rms = Vad::calculate_rms(&chunk);
             self.send_audio_level(rms);
+
+            if silent_input.feed(&chunk) {
+                warn!("Input is pure digital silence; microphone is muted");
+                return Err(MIC_MUTED.to_string());
+            }
 
             // VAD for speech detection (used for waveform UI, not timeout gating)
             let _events = vad.process(&chunk);
