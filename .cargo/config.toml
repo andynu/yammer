@@ -1,0 +1,4 @@
+[env]
+# sentencepiece-sys's bundled C++ uses uint32_t without including <cstdint>,
+# which GCC 13+ no longer pulls in transitively.
+CXXFLAGS = "-include cstdint"
