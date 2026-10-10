@@ -7,18 +7,19 @@ Local speech-to-text with LLM correction for Linux. Speak naturally, get polishe
 ## Features
 
 - **Voice Activity Detection** - Automatically detects when you start/stop speaking
-- **Speech-to-Text** - Local Whisper model for accurate transcription
+- **Speech-to-Text** - Local Kyutai `stt-1b-en_fr` model, streaming words as you speak (English and French)
 - **LLM Text Correction** - Fixes homophones and adds punctuation
 - **Floating Overlay** - Transparent window with real-time waveform visualization
 - **Universal Input** - Types into any application via xdotool
 - **100% Local** - No cloud services, all processing on-device
-- **GPU Accelerated** - Optional CUDA support for faster transcription
+- **GPU Accelerated** - Speech-to-text runs on CUDA through candle
 
 ## Requirements
 
 - Linux with X11 (Wayland not yet supported)
+- NVIDIA GPU and the CUDA toolkit (`nvcc` on `PATH`). The default build enables CUDA, and while the STT model falls back to CPU when no GPU is found, CPU inference is too slow for live dictation
 - 4GB RAM minimum, 8GB recommended
-- ~2GB disk for models
+- ~3GB disk for models
 
 ```bash
 # Check your session type
@@ -48,7 +49,7 @@ cd yammer
 cargo build --release
 ```
 
-First build takes 10-15 minutes (compiles Whisper and llama.cpp).
+First build takes 10-15 minutes (compiles candle's CUDA kernels and llama.cpp).
 
 ### 3. Download Models
 
@@ -56,7 +57,9 @@ First build takes 10-15 minutes (compiles Whisper and llama.cpp).
 cargo run --release --bin yammer download-models
 ```
 
-Downloads Whisper (~141MB) and TinyLlama (~1.6GB) to `~/.cache/yammer/models/`.
+Downloads the TinyLlama 1.1B correction model (~670MB) to `~/.local/share/yammer/models/`.
+
+The Kyutai STT model (`kyutai/stt-1b-en_fr-candle`, ~2.4GB) is not part of this step. It is fetched from Hugging Face the first time Yammer loads it and cached in `~/.cache/huggingface/hub/`.
 
 ### 4. Run
 
@@ -107,7 +110,7 @@ yammer correct "your transcribed text here"
 yammer/
 ├── yammer-core/     # Shared types, config, model management
 ├── yammer-audio/    # Audio capture, VAD, resampling
-├── yammer-stt/      # Whisper speech-to-text
+├── yammer-stt/      # Kyutai streaming speech-to-text (moshi + candle)
 ├── yammer-llm/      # LLM text correction
 ├── yammer-output/   # Text output via xdotool
 ├── yammer-cli/      # CLI interface
@@ -117,11 +120,11 @@ yammer/
 ## Architecture
 
 ```
-Microphone → Audio Capture → VAD → Resampler (16kHz)
+Microphone → Audio Capture → VAD → Resampler (24kHz)
                                        ↓
-                                   Whisper → LLM Correction → xdotool → Active Window
+                              Kyutai STT (80ms chunks) → LLM Correction → xdotool → Active Window
                                        ↓
-                               Tauri UI (waveform, status, text)
+                               Tauri UI (waveform, status, live text)
 ```
 
 ## Configuration
@@ -138,11 +141,15 @@ yammer dictate --threshold 0.02
 
 ## Performance
 
-| Component | CPU | GPU (CUDA) |
-|-----------|-----|------------|
-| Whisper (5s audio) | 500ms-1.5s | 250-750ms |
-| LLM correction | 100-500ms | - |
-| VAD latency | ~200ms start, ~400ms end | - |
+| Component | Time |
+|-----------|------|
+| Kyutai STT model load (GPU, cached weights) | ~2.5s, once at startup |
+| Kyutai STT, 6.7s clip transcribed as a file (RTX A4000) | ~1.4s |
+| Kyutai STT, final words after speech ends | ~0.5s (the model's audio delay) |
+| LLM correction | 100-500ms |
+| VAD latency | ~200ms start, ~400ms end |
+
+During live dictation the STT model consumes audio in 80ms chunks as it arrives, so transcription runs alongside speech instead of after it. The GPU figures above are from one machine; the app logs a per-dictation stage timing breakdown at `info` level for measuring your own.
 
 ## Troubleshooting
 
@@ -161,7 +168,7 @@ cargo clean && cargo build --release
 Requires X11 with a compositor (standard on GNOME/KDE).
 
 **Transcription slow**
-Use `--release` builds. Consider enabling CUDA if you have an NVIDIA GPU.
+Use `--release` builds. If the log shows `CUDA unavailable ... falling back to CPU`, the STT model is running on CPU, which cannot keep up with live audio. Check the NVIDIA driver and that the build had the `cuda` feature (on by default).
 
 ## Documentation
 
@@ -175,7 +182,8 @@ MIT - See [LICENSE](./LICENSE) and [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICE
 
 ## Credits
 
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Speech recognition
+- [Kyutai STT](https://github.com/kyutai-labs/delayed-streams-modeling) and [moshi](https://github.com/kyutai-labs/moshi) - Speech recognition
+- [candle](https://github.com/huggingface/candle) - ML inference for the STT model
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) - LLM inference
 - [Tauri](https://tauri.app/) - Desktop app framework
 - [cpal](https://github.com/RustAudio/cpal) - Audio I/O
