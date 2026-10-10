@@ -5,7 +5,7 @@ use std::time::Instant;
 use llama_cpp::{LlamaModel, LlamaParams, SessionParams};
 use llama_cpp::standard_sampler::StandardSampler;
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Errors that can occur during text correction
 #[derive(Error, Debug)]
@@ -90,6 +90,50 @@ fn build_custom_prompt(template: &str, text: &str) -> String {
     }
 }
 
+/// Edits allowed between input and output regardless of length, so short
+/// inputs can still gain a word ending ("ok" -> "Okay.").
+const GUARD_MIN_EDITS: usize = 3;
+
+/// Fraction of the input's letters that the correction may change.
+const GUARD_MAX_EDIT_RATIO: f64 = 0.3;
+
+/// Lowercase alphanumerics only, so punctuation, capitalization and word
+/// splitting cost nothing and only changes to the words themselves count.
+fn letters(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Return the correction, or the raw input when the model produced nothing or
+/// changed the words more than a correction should (a summary, a rephrase, an
+/// invented continuation).
+fn guard_correction<'a>(input: &'a str, output: &'a str) -> &'a str {
+    if output.trim().is_empty() {
+        warn!("LLM correction was empty, keeping raw transcript");
+        return input;
+    }
+
+    let before = letters(input);
+    let after = letters(output);
+    let distance = strsim::levenshtein(&before, &after);
+    let allowed = GUARD_MIN_EDITS
+        .max((before.chars().count() as f64 * GUARD_MAX_EDIT_RATIO) as usize);
+
+    if distance > allowed {
+        warn!(
+            "LLM correction changed {} of {} letters (limit {}), keeping raw transcript: '{}'",
+            distance,
+            before.chars().count(),
+            allowed,
+            output
+        );
+        return input;
+    }
+    output
+}
+
 impl Corrector {
     /// Create a new corrector with the given model path
     pub fn new(model_path: &Path) -> CorrectorResult<Self> {
@@ -170,8 +214,16 @@ impl Corrector {
         let latency_ms = start.elapsed().as_millis() as u64;
         debug!("Correction completed in {}ms: '{}' -> '{}'", latency_ms, text, result.trim());
 
+        let output = result.trim();
+        let corrected = match custom_prompt {
+            // A custom prompt may legitimately ask for a rewrite, so only an
+            // empty result is rejected there.
+            Some(_) if !output.is_empty() => output,
+            _ => guard_correction(text, output),
+        };
+
         Ok(CorrectionResult {
-            text: result.trim().to_string(),
+            text: corrected.to_string(),
             latency_ms,
         })
     }
@@ -200,6 +252,52 @@ mod tests {
         let text = "hello world";
         let result = build_custom_prompt(template, text);
         assert_eq!(result, "Fix this text: hello world");
+    }
+
+    #[test]
+    fn test_guard_accepts_punctuation_and_capitalization() {
+        let input = "im going to the store do you want anything";
+        let output = "I'm going to the store. Do you want anything?";
+        assert_eq!(guard_correction(input, output), output);
+    }
+
+    #[test]
+    fn test_guard_accepts_split_words() {
+        let input = "Ihope multiple labswill contribute Ihave noidea howshared itwill be";
+        let output = "I hope multiple labs will contribute. I have no idea how shared it will be.";
+        assert_eq!(guard_correction(input, output), output);
+    }
+
+    #[test]
+    fn test_guard_accepts_homophone_fix() {
+        let input = "their going to be late for the meeting";
+        let output = "They're going to be late for the meeting.";
+        assert_eq!(guard_correction(input, output), output);
+    }
+
+    #[test]
+    fn test_guard_accepts_small_change_to_short_input() {
+        assert_eq!(guard_correction("ok", "Okay."), "Okay.");
+    }
+
+    #[test]
+    fn test_guard_rejects_empty_output() {
+        assert_eq!(guard_correction("hello there", ""), "hello there");
+        assert_eq!(guard_correction("ok", "  "), "ok");
+    }
+
+    #[test]
+    fn test_guard_rejects_summary() {
+        let input = "so i was thinking we could move the standup to ten because half the team is in another timezone now";
+        let output = "The speaker suggests moving the meeting.";
+        assert_eq!(guard_correction(input, output), input);
+    }
+
+    #[test]
+    fn test_guard_rejects_invented_continuation() {
+        let input = "send me the report when its done";
+        let output = "Send me the report when it's done. Also, remember to book the flights for the conference next week.";
+        assert_eq!(guard_correction(input, output), input);
     }
 
     #[test]
