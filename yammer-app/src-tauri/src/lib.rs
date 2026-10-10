@@ -1,11 +1,13 @@
 //! Yammer Tauri application
 
 mod pipeline;
+mod timing;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
 use tauri::{
     AppHandle, Emitter, Manager, State,
     menu::{Menu, MenuItem},
@@ -102,6 +104,7 @@ fn spawn_hotkey_listener(app_handle: AppHandle, hold_keys: Vec<String>) {
                 if all_pressed && !dictation_active {
                     dictation_active = true;
                     info!("{} pressed - starting dictation", label);
+                    mark_dictation_requested(&app_handle);
 
                     // Capture the currently focused window BEFORE showing Yammer,
                     // so we can refocus it when outputting text
@@ -161,6 +164,32 @@ pub struct AppState {
     /// Window ID to refocus before text output (captured before showing Yammer).
     /// Uses std::sync::Mutex (not tokio) so it's accessible from the rdev hotkey thread.
     paste_target: Arc<std::sync::Mutex<Option<String>>>,
+    /// When a hotkey or tray action last asked for dictation, for the
+    /// per-dictation timing log. std::sync::Mutex for the same reason as above.
+    dictation_requested_at: Arc<std::sync::Mutex<Option<Instant>>>,
+}
+
+/// A request older than this when start_dictation runs belongs to an earlier
+/// press (a toggle that stopped dictation), not the one starting it now.
+const STALE_REQUEST: Duration = Duration::from_secs(2);
+
+fn mark_dictation_requested(app: &AppHandle) {
+    if let Ok(mut guard) = app.state::<AppState>().dictation_requested_at.lock() {
+        *guard = Some(Instant::now());
+    }
+}
+
+/// Consume the recorded request instant, falling back to `now` when there is
+/// none (frontend button) or it is stale.
+fn take_dictation_request(
+    slot: &std::sync::Mutex<Option<Instant>>,
+    now: Instant,
+) -> Instant {
+    let requested = slot.lock().ok().and_then(|mut g| g.take());
+    match requested {
+        Some(at) if now.saturating_duration_since(at) <= STALE_REQUEST => at,
+        _ => now,
+    }
 }
 
 /// Schedule (or reschedule) the idle unload timer.
@@ -331,6 +360,7 @@ async fn start_dictation_inner(
     disable_silence_timeout: bool,
 ) -> Result<(), String> {
     info!("Start dictation command received (silence_timeout disabled: {})", disable_silence_timeout);
+    let requested_at = take_dictation_request(&state.dictation_requested_at, Instant::now());
 
     // Cancel any pending idle timer since we're about to use the pipeline
     {
@@ -388,6 +418,7 @@ async fn start_dictation_inner(
                 // Set the paste target so output refocuses the user's window
                 let target = state.paste_target.lock().ok().and_then(|g| g.clone());
                 p.set_target_window(target);
+                p.set_requested_at(requested_at);
 
                 // In toggle mode, disable silence timeout — user will explicitly stop
                 if disable_silence_timeout {
@@ -715,6 +746,7 @@ pub fn run() {
         idle_timer_handle: Arc::new(Mutex::new(None)),
         idle_unload_seconds,
         paste_target: Arc::new(std::sync::Mutex::new(None)),
+        dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -731,6 +763,7 @@ pub fn run() {
 
                 // Capture paste target before showing window (for dictation modes)
                 if is_toggle {
+                    mark_dictation_requested(app);
                     let target = capture_active_window();
                     if let Ok(mut guard) = app.state::<AppState>().paste_target.lock() {
                         *guard = target;
@@ -788,6 +821,7 @@ pub fn run() {
 
                     if is_toggle || is_legacy {
                         debug!("Dictation toggle hotkey pressed");
+                        mark_dictation_requested(app);
 
                         // Capture paste target before showing window
                         let target = capture_active_window();
@@ -890,6 +924,7 @@ pub fn run() {
                     }
                     "toggle" => {
                         info!("Tray: Toggle Recording clicked");
+                        mark_dictation_requested(app);
                         // Capture paste target before toggling dictation
                         let target = capture_active_window();
                         if let Ok(mut guard) = app.state::<AppState>().paste_target.lock() {
@@ -1030,6 +1065,27 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_take_dictation_request_uses_recent_press_once() {
+        let pressed = Instant::now();
+        let slot = std::sync::Mutex::new(Some(pressed));
+        let now = pressed + Duration::from_millis(40);
+
+        assert_eq!(take_dictation_request(&slot, now), pressed);
+        assert!(slot.lock().unwrap().is_none());
+        assert_eq!(take_dictation_request(&slot, now), now);
+    }
+
+    #[test]
+    fn test_take_dictation_request_ignores_stale_press() {
+        let pressed = Instant::now();
+        let slot = std::sync::Mutex::new(Some(pressed));
+        let now = pressed + STALE_REQUEST + Duration::from_millis(1);
+
+        assert_eq!(take_dictation_request(&slot, now), now);
+        assert!(slot.lock().unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn test_app_state_initial_values() {
         let (event_tx, _event_rx) = mpsc::channel::<PipelineEvent>(100);
@@ -1044,6 +1100,7 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
+            dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
 
         // Initial state should be not running
@@ -1078,6 +1135,7 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
+            dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
 
         // Simulate setting cancel handle (as start_dictation would)
@@ -1113,6 +1171,7 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
+            dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
 
         // Start dictation would set is_running to true
@@ -1144,6 +1203,7 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
+            dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
 
         // Initially no transcription

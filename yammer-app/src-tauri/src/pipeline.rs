@@ -11,6 +11,8 @@ use yammer_output::{TextOutput, OutputMethod};
 use yammer_stt::{KyutaiTranscriber, KYUTAI_CHUNK_SAMPLES};
 use yammer_llm::Corrector;
 
+use crate::timing::StageTimings;
+
 const MIC_MUTED: &str = "Microphone is muted (input is pure silence). Unmute it and try again.";
 
 /// Pipeline state
@@ -101,6 +103,8 @@ pub struct DictationPipeline {
     target_window: Option<String>,
     /// One-shot override for silence timeout (consumed by next run_blocking)
     silence_timeout_override: Option<u32>,
+    /// When the user asked for this dictation (consumed by next run_blocking)
+    requested_at: Option<Instant>,
 }
 
 impl DictationPipeline {
@@ -116,7 +120,14 @@ impl DictationPipeline {
             audio_capture: None,
             target_window: None,
             silence_timeout_override: None,
+            requested_at: None,
         }
+    }
+
+    /// Set when the user asked for the next dictation (hotkey press), so the
+    /// timing log covers keypress to listening. Defaults to run start.
+    pub fn set_requested_at(&mut self, at: Instant) {
+        self.requested_at = Some(at);
     }
 
     /// Set the target window to refocus before text output
@@ -312,6 +323,18 @@ impl DictationPipeline {
     /// Run the complete dictation pipeline (blocking).
     /// Should be called from spawn_blocking.
     pub fn run_blocking(&mut self) -> Result<String, String> {
+        let requested_at = self.requested_at.take().unwrap_or_else(Instant::now);
+        let mut timing = StageTimings::new(requested_at);
+        let result = self.run_stages(&mut timing);
+        let outcome = match &result {
+            Ok(_) => "done",
+            Err(e) => e.as_str(),
+        };
+        info!("Dictation timing ({}): {}", outcome, timing.summary(Instant::now()));
+        result
+    }
+
+    fn run_stages(&mut self, timing: &mut StageTimings) -> Result<String, String> {
         info!("Starting dictation pipeline...");
         self.reset_cancel();
 
@@ -323,7 +346,7 @@ impl DictationPipeline {
         }
 
         // 1. Listen + transcribe concurrently (Kyutai streams words as user speaks)
-        let text = match self.listen_and_transcribe_blocking() {
+        let text = match self.listen_and_transcribe_blocking(timing) {
             Ok(t) => t,
             Err(e) => {
                 if e == "No audio recorded" || e == "Discarded" {
@@ -337,19 +360,24 @@ impl DictationPipeline {
         };
 
         // 2. Correct (optional LLM pass)
-        let corrected = match self.correct_blocking(&text) {
+        let correction_start = Instant::now();
+        let correction = self.correct_blocking(&text);
+        if self.config.use_llm_correction && self.corrector.is_some() {
+            timing.record("correction", correction_start.elapsed());
+        }
+        let corrected = match correction {
             Ok(t) => t,
             Err(e) if e == "Cancelled" => {
                 if self.is_discarded() {
                     self.send_state(PipelineState::Discarded);
                     return Err("Discarded".to_string());
                 }
-                self.output_blocking(&text)?;
+                self.timed_output(&text, timing)?;
                 return Ok(text);
             }
             Err(e) => {
                 warn!("Correction failed, outputting uncorrected: {}", e);
-                self.output_blocking(&text)?;
+                self.timed_output(&text, timing)?;
                 return Ok(text);
             }
         };
@@ -360,7 +388,7 @@ impl DictationPipeline {
         }
 
         // 3. Output text
-        match self.output_blocking(&corrected) {
+        match self.timed_output(&corrected, timing) {
             Ok(()) => Ok(corrected),
             Err(e) => {
                 self.send_error(e.clone());
@@ -370,12 +398,22 @@ impl DictationPipeline {
         }
     }
 
+    fn timed_output(&self, text: &str, timing: &mut StageTimings) -> Result<(), String> {
+        let start = Instant::now();
+        let result = self.output_blocking(text);
+        timing.record("typing", start.elapsed());
+        result
+    }
+
     /// Listen and transcribe concurrently.
     ///
     /// Audio is captured in chunks, resampled to 24 kHz, fed to Kyutai in
     /// 1920-sample (80 ms) steps, and words are emitted to the UI as they
     /// are recognised — while the user is still speaking.
-    fn listen_and_transcribe_blocking(&mut self) -> Result<String, String> {
+    fn listen_and_transcribe_blocking(
+        &mut self,
+        timing: &mut StageTimings,
+    ) -> Result<String, String> {
         self.send_state(PipelineState::Listening);
         info!("Starting audio capture + streaming transcription...");
 
@@ -405,6 +443,8 @@ impl DictationPipeline {
 
         let _ = capture;
         info!("Audio capture ready: {} Hz", input_sample_rate);
+        let listening_at = Instant::now();
+        timing.record_span("keypress_to_listening", timing.started(), listening_at);
         let mut rx = rx;
 
         // VAD for audio level + speech detection
@@ -447,6 +487,11 @@ impl DictationPipeline {
         // Accumulated token IDs from STT (decoded as a batch for correct spacing)
         let mut accumulated_tokens: Vec<u32> = Vec::new();
 
+        // Stamped when a chunk is processed, not captured, so a backlog behind
+        // a slow STT step shifts it later.
+        let mut last_speech_at: Option<Instant> = None;
+        let mut stopped_at: Option<Instant> = None;
+
         while let Some(chunk) = rx.blocking_recv() {
             // Check discard/cancel before doing any work
             if self.is_discarded() {
@@ -455,6 +500,7 @@ impl DictationPipeline {
             }
 
             if self.is_cancelled() {
+                stopped_at = Some(Instant::now());
                 info!(
                     "Listening stopped by user, draining remaining audio ({} tokens so far)",
                     accumulated_tokens.len()
@@ -503,6 +549,9 @@ impl DictationPipeline {
 
             // VAD for speech detection (used for waveform UI, not timeout gating)
             let _events = vad.process(&chunk);
+            if vad.is_speech() {
+                last_speech_at = Some(Instant::now());
+            }
 
             // Silence timeout: discard if no tokens transcribed within the timeout.
             // Uses STT output (not VAD) so it won't misfire when the mic is active
@@ -543,6 +592,7 @@ impl DictationPipeline {
                 let elapsed = recording_start.elapsed().as_secs() as u32;
                 if elapsed >= max_seconds {
                     warn!("Recording timeout ({}s max)", max_seconds);
+                    stopped_at = Some(Instant::now());
                     Self::flush_resampler(&mut resampler, &mut raw_carry, &mut carry_buf);
                     if let Some(ref mut t) = self.transcriber {
                         Self::flush_carry_buf(t, &mut carry_buf, &mut accumulated_tokens);
@@ -554,6 +604,17 @@ impl DictationPipeline {
 
         let final_text = self.transcriber.as_ref().unwrap()
             .decode_tokens(&accumulated_tokens);
+
+        let transcript_at = Instant::now();
+        let stopped_at = stopped_at.unwrap_or(transcript_at);
+        timing.record_span("listening", listening_at, stopped_at);
+        // VAD can miss quiet speech entirely; fall back to the stop.
+        timing.record_span(
+            "speech_to_transcript",
+            last_speech_at.unwrap_or(stopped_at),
+            transcript_at,
+        );
+        timing.record_span("stop_to_transcript", stopped_at, transcript_at);
 
         if final_text.trim().is_empty() {
             warn!("No speech recognised");
@@ -810,5 +871,15 @@ mod tests {
             }
         }
         assert!(found_error_state);
+    }
+
+    #[test]
+    fn test_requested_at_is_consumed_by_run() {
+        let (tx, _rx) = mpsc::channel(10);
+        let mut pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
+        pipeline.set_requested_at(Instant::now());
+
+        let _ = pipeline.run_blocking();
+        assert!(pipeline.requested_at.is_none());
     }
 }
