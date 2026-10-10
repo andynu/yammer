@@ -14,14 +14,9 @@
 
 use std::path::PathBuf;
 
-use yammer_stt::{KYUTAI_CHUNK_SAMPLES, KyutaiTranscriber, load_wav_24k};
+use yammer_stt::{KyutaiTranscriber, load_wav_24k};
 
 const DEFAULT_STT_REPO: &str = "kyutai/stt-1b-en_fr-candle";
-
-/// Silence appended after each clip, matching the ~1 s the app pipeline feeds
-/// at the end of a recording. The model emits text ~0.5 s behind the audio, so
-/// without it the last words of a clip never come out.
-const TRAILING_SILENCE_CHUNKS: usize = 13;
 
 struct Case {
     file: &'static str,
@@ -98,11 +93,8 @@ fn fixtures_transcribe_with_expected_keywords() {
 
     let mut failures = Vec::new();
     for case in CASES {
-        transcriber.reset().expect("reset ASR state");
-
-        let mut samples = load_wav_24k(&fixture(case.file))
+        let samples = load_wav_24k(&fixture(case.file))
             .unwrap_or_else(|e| panic!("load {}: {e:#}", case.file));
-        samples.resize(samples.len() + TRAILING_SILENCE_CHUNKS * KYUTAI_CHUNK_SAMPLES, 0.0);
 
         let text = transcriber
             .transcribe_buffer(&samples)
@@ -123,4 +115,38 @@ fn fixtures_transcribe_with_expected_keywords() {
     }
 
     assert!(failures.is_empty(), "transcription regressions:\n{}", failures.join("\n"));
+}
+
+/// Cut the lead-in and trailing silence so the clip ends on speech, the case
+/// where the model's audio delay holds back the last words.
+fn trim_silence(samples: &[f32]) -> &[f32] {
+    const THRESHOLD: f32 = 0.01;
+    let start = samples.iter().position(|s| s.abs() > THRESHOLD).unwrap_or(0);
+    let end = samples.iter().rposition(|s| s.abs() > THRESHOLD).map_or(start, |i| i + 1);
+    &samples[start..end]
+}
+
+/// `yammer dictate` calls `transcribe_buffer` once per VAD segment on one
+/// transcriber. Each call must return its own trailing words and nothing left
+/// over from the previous segment.
+#[test]
+#[ignore = "needs Kyutai model weights (and ideally a GPU); run before releases and dependency bumps"]
+fn back_to_back_buffers_keep_their_own_words() {
+    let repo = std::env::var("YAMMER_STT_REPO").unwrap_or_else(|_| DEFAULT_STT_REPO.to_string());
+    let mut transcriber = KyutaiTranscriber::new(&repo).expect("load Kyutai model");
+
+    let meeting = load_wav_24k(&fixture("meeting_22k_i16.wav")).expect("load meeting");
+    let email = load_wav_24k(&fixture("email_16k_i16.wav")).expect("load email");
+
+    let first = transcriber.transcribe_buffer(trim_silence(&meeting)).expect("transcribe meeting");
+    let second = transcriber.transcribe_buffer(trim_silence(&email)).expect("transcribe email");
+    println!("meeting: {first:?}\nemail:   {second:?}");
+
+    let first = normalize(&first);
+    let second = normalize(&second);
+    assert!(first.contains("thursday afternoon"), "meeting lost its last words: {first:?}");
+    assert!(second.contains("broken printer"), "email lost its last words: {second:?}");
+    for word in ["thursday", "afternoon", "engineering"] {
+        assert!(!second.contains(word), "meeting's {word:?} leaked into email: {second:?}");
+    }
 }

@@ -12,6 +12,12 @@ pub const KYUTAI_CHUNK_SAMPLES: usize = 1920;
 /// Sample rate expected by the Kyutai/Mimi codec
 const KYUTAI_SAMPLE_RATE: u32 = 24_000;
 
+/// Silent chunks fed past the model's audio delay when flushing a buffer. The
+/// delay alone is not enough: the last word only comes out once the model has
+/// heard enough silence to end it. With the 0.5 s delay this totals 13 chunks,
+/// the same ~1 s the app pipeline feeds after stop.
+const FLUSH_MARGIN_CHUNKS: usize = 7;
+
 /// Temperature for text token sampling (0 = greedy)
 const ASR_TEMPERATURE: f64 = 0.0;
 
@@ -109,6 +115,9 @@ pub struct KyutaiTranscriber {
     state: moshi::asr::State,
     tokenizer: sentencepiece::SentencePieceProcessor,
     device: Device,
+    /// Silent chunks [`transcribe_buffer`] feeds after the audio so words the
+    /// model is still holding back (its audio delay) come out.
+    flush_chunks: usize,
 }
 
 impl KyutaiTranscriber {
@@ -206,10 +215,14 @@ impl KyutaiTranscriber {
         }
         info!("Kyutai STT model ready");
 
+        // One step per token, so the delay in tokens is also the delay in chunks.
+        let flush_chunks = asr_delay_in_tokens + FLUSH_MARGIN_CHUNKS;
+
         Ok(Self {
             state,
             tokenizer,
             device,
+            flush_chunks,
         })
     }
 
@@ -258,7 +271,11 @@ impl KyutaiTranscriber {
     /// Useful for batch/offline transcription (e.g. from a file).  The buffer is
     /// processed in [`KYUTAI_CHUNK_SAMPLES`]-sample chunks; any remaining samples
     /// shorter than a full chunk are zero-padded.
+    ///
+    /// Each call starts from a reset state and ends with a silence flush, so the
+    /// result holds exactly this buffer's words, none carried in or held back.
     pub fn transcribe_buffer(&mut self, pcm_24k: &[f32]) -> Result<String> {
+        self.reset()?;
         let mut all_tokens: Vec<u32> = Vec::new();
 
         let mut offset = 0;
@@ -273,6 +290,11 @@ impl KyutaiTranscriber {
             let mut chunk = pcm_24k[offset..].to_vec();
             chunk.resize(KYUTAI_CHUNK_SAMPLES, 0.0);
             all_tokens.extend(self.step(&chunk)?);
+        }
+
+        let silence = vec![0.0f32; KYUTAI_CHUNK_SAMPLES];
+        for _ in 0..self.flush_chunks {
+            all_tokens.extend(self.step(&silence)?);
         }
 
         Ok(self.decode_tokens(&all_tokens))
