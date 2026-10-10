@@ -11,6 +11,7 @@ external: External {
   mic: Microphone
   xdotool: xdotool
   xclip: xclip
+  uinput: uinput virtual keyboard
   app: Target App
 }
 
@@ -26,15 +27,15 @@ workspace: yammer workspace {
   audio: yammer-audio {
     capture: Audio Capture (cpal)
     vad: Voice Activity Detection
-    resample: Resampler (16kHz)
+    resample: Resampler (24kHz)
   }
 
   stt: yammer-stt {
-    whisper: Whisper Transcriber
+    kyutai: Kyutai Transcriber (moshi + candle, CUDA)
   }
 
   llm: yammer-llm {
-    corrector: LLM Corrector
+    corrector: LLM Corrector (llama.cpp, CPU)
   }
 
   output: yammer-output {
@@ -54,15 +55,16 @@ workspace: yammer workspace {
 
 # Models on disk
 models: AI Models {
-  whisper_model: Whisper GGML
-  llm_model: TinyLlama GGUF
+  stt_model: "Kyutai stt-1b-en_fr\n(~/.cache/huggingface/hub)"
+  llm_model: "TinyLlama GGUF\n(~/.local/share/yammer/models)"
+}
+
+hf: Hugging Face Hub {
+  shape: cloud
 }
 
 # Dependencies between crates
 workspace.audio -> workspace.core: uses config
-workspace.stt -> workspace.core: uses config
-workspace.llm -> workspace.core: uses config
-workspace.output -> workspace.core: uses config
 
 workspace.cli -> workspace.audio: audio testing
 workspace.cli -> workspace.stt: transcribe cmd
@@ -70,6 +72,7 @@ workspace.cli -> workspace.llm: correct cmd
 workspace.cli -> workspace.output: dictate output
 workspace.cli -> workspace.core: config cmds
 
+workspace.app.backend -> workspace.core: config
 workspace.app.pipeline -> workspace.audio: capture
 workspace.app.pipeline -> workspace.stt: transcribe
 workspace.app.pipeline -> workspace.llm: correct
@@ -80,10 +83,13 @@ user -> external.mic: speaks
 external.mic -> workspace.audio.capture: audio stream
 workspace.output.textout -> external.xdotool: type command
 workspace.output.textout -> external.xclip: clipboard
+workspace.output.textout -> external.uinput: Shift+Insert paste
 external.xdotool -> external.app: keystrokes
 external.xclip -> external.app: paste
+external.uinput -> external.app: paste
 
 # Model loading
-workspace.core.download -> models: downloads
-workspace.stt.whisper -> models.whisper_model: loads
+workspace.core.download -> models.llm_model: downloads
+hf -> models.stt_model: fetched on first load
+workspace.stt.kyutai -> models.stt_model: loads
 workspace.llm.corrector -> models.llm_model: loads

@@ -3,57 +3,57 @@
 direction: down
 
 # Trigger
-hotkey: User presses Ctrl+Alt+D
+hotkey: "User holds Ctrl+Super (or presses F6 to toggle)"
 
-# Phase 1: Audio Capture
-phase1: 1. Audio Capture {
+# Phase 1: Listen and transcribe, concurrently
+phase1: 1. Listen + Transcribe (while speaking) {
   start: Start Recording
   capture: cpal AudioCapture
   chunks: Audio Chunks (50ms)
-  vad: VAD Processor
-  detect: Speech Detection
-  resample: Resample to 16kHz
-  samples: Audio Samples
+  level: RMS / VAD (waveform, mute check)
+  resample: Resample to 24kHz
+  step: "Kyutai step (1920 samples = 80ms)"
+  partial: Partial Transcript
 
   start -> capture
   capture -> chunks
-  chunks -> vad
-  vad -> detect
-  detect -> resample: speech end
-  resample -> samples
+  chunks -> level
+  chunks -> resample
+  resample -> step
+  step -> partial: words as they are recognised
 }
 
-# Phase 2: Transcription
-phase2: 2. Transcription {
-  load: Load Whisper Model
-  infer: Whisper Inference
-  filter: Filter Hallucinations
-  transcript: Raw Transcript
+# Stop: key released or toggled off
+stop: Stop {
+  drain: Drain buffered audio
+  flush: "Flush ~1s silence\n(model's 0.5s audio delay)"
+  transcript: Final Transcript
 
-  load -> infer
-  infer -> filter
-  filter -> transcript
+  drain -> flush
+  flush -> transcript
 }
 
-# Phase 3: LLM Correction
-phase3: 3. LLM Correction {
+# Phase 2: LLM Correction (optional)
+phase2: 2. LLM Correction (optional) {
   prompt: Build Correction Prompt
-  llm: TinyLlama Inference
-  clean: Clean Output
+  llm: TinyLlama Inference (CPU)
+  guard: "Keep raw text if output is empty\nor rewrites the transcript"
   corrected: Corrected Text
 
   prompt -> llm
-  llm -> clean
-  clean -> corrected
+  llm -> guard
+  guard -> corrected
 }
 
-# Phase 4: Output
-phase4: 4. Text Output {
+# Phase 3: Output
+phase3: 3. Text Output {
+  focus: Refocus target window
   method: Check Output Method
   type: xdotool type
-  clipboard: xclip + Ctrl+V
+  clipboard: "xclip + Shift+Insert\n(uinput, xdotool fallback)"
   done: Text in Target App
 
+  focus -> method
   method -> type: type method
   method -> clipboard: clipboard method
   type -> done
@@ -62,9 +62,9 @@ phase4: 4. Text Output {
 
 # Main flow between phases
 hotkey -> phase1.start: trigger
-phase1.samples -> phase2.load: 16kHz audio
-phase2.transcript -> phase3.prompt: raw text
-phase3.corrected -> phase4.method: final text
+phase1 -> stop: release / toggle
+stop.transcript -> phase2.prompt: raw text
+phase2.corrected -> phase3.focus: final text
 
 # UI Updates (parallel)
 ui: GUI Updates {
@@ -73,10 +73,9 @@ ui: GUI Updates {
   text: Transcript Display
 }
 
-phase1.chunks -> ui.waveform: audio levels
+phase1.level -> ui.waveform: audio levels
 phase1 -> ui.status: Listening
-phase2 -> ui.status: Processing
-phase3 -> ui.status: Correcting
-phase4 -> ui.status: Done
-phase2.transcript -> ui.text: show text
-phase3.corrected -> ui.text: update text
+phase2 -> ui.status: Correcting
+phase3 -> ui.status: Done
+phase1.partial -> ui.text: live text
+phase2.corrected -> ui.text: update text
