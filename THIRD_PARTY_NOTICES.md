@@ -5,12 +5,19 @@ to their authors and contributors.
 
 ## Core Dependencies
 
-### whisper.cpp
-- **License**: MIT
-- **Copyright**: Copyright (c) 2023-2024 The ggml authors
-- **Repository**: https://github.com/ggerganov/whisper.cpp
+### moshi
+- **License**: MIT OR Apache-2.0
+- **Copyright**: Copyright (c) The moshi authors (Kyutai)
+- **Repository**: https://github.com/kyutai-labs/moshi
 
-High-performance C++ implementation of OpenAI's Whisper speech recognition model.
+Rust implementation of Kyutai's streaming speech models, used for speech-to-text.
+
+### candle
+- **License**: MIT OR Apache-2.0
+- **Copyright**: Copyright (c) The candle contributors
+- **Repository**: https://github.com/huggingface/candle
+
+Machine learning framework that runs the speech-to-text model, on CUDA when available.
 
 ### llama.cpp
 - **License**: MIT
@@ -25,6 +32,17 @@ C++ implementation of LLaMA and other large language models.
 - **Repository**: https://github.com/tauri-apps/tauri
 
 Framework for building lightweight desktop applications.
+
+## Model Weights
+
+Model weights are not bundled with Yammer. They are downloaded on first use.
+
+### Kyutai STT (`kyutai/stt-1b-en_fr-candle`)
+- **License**: CC-BY-4.0
+- **Author**: Kyutai
+- **Model card**: https://huggingface.co/kyutai/stt-1b-en_fr-candle
+
+Streaming English and French speech-to-text model, fetched from Hugging Face.
 
 ## Rust Crates (Apache-2.0)
 
