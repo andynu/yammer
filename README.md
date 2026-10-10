@@ -8,7 +8,7 @@ Local speech-to-text with LLM correction for Linux. Speak naturally, get polishe
 
 - **Voice Activity Detection** - Automatically detects when you start/stop speaking
 - **Speech-to-Text** - Local Whisper model for accurate transcription
-- **LLM Text Correction** - Fixes homophones, adds punctuation, removes filler words
+- **LLM Text Correction** - Fixes homophones and adds punctuation
 - **Floating Overlay** - Transparent window with real-time waveform visualization
 - **Universal Input** - Types into any application via xdotool
 - **100% Local** - No cloud services, all processing on-device
