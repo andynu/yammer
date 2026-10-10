@@ -78,6 +78,47 @@ Revisit if any of the following occur:
 
 4. **Hardware upgrade** — if Yammer's target hardware moves to 16GB+ VRAM cards
 
+## Revisit: 2026-10-10
+
+Two of the four triggers have fired, though not in the form the list above expected.
+
+1. **llama.cpp port.** Still not there. The feature request
+   ([#19696](https://github.com/ggml-org/llama.cpp/issues/19696)) and the planning issue
+   that replaced it ([#20914](https://github.com/ggml-org/llama.cpp/issues/20914)) were
+   both closed, the latter as stale on 2026-07-17. The three Voxtral Realtime PRs
+   (#19698, #20625, #20638) were closed unmerged. llama.cpp gained file transcription
+   through `/v1/audio/transcriptions` (#21863), but libmtmd still has no realtime audio
+   input.
+2. **An embeddable ggml runtime exists anyway.**
+   [audio.cpp](https://github.com/0xShug0/audio.cpp) (Apache-2.0, C++ on ggml, v0.9.1
+   released 2026-10-07) supports Voxtral Realtime in offline and streaming modes and
+   ships a C ABI (`include/audiocpp.h`, `docs/c_api.md`) with a pull-based streaming
+   session: `audiocpp_stream_start`, `audiocpp_stream_push` per audio chunk,
+   `audiocpp_stream_next_event`, `audiocpp_stream_finish`. That covers the "embedded Rust
+   via FFI" requirement without a sidecar. Prebuilt CUDA 12.8 and 13.3 library archives
+   are published for Linux. `libaudiocpp.so` uses a version script that exports only
+   `audiocpp_*`, so its bundled ggml should not collide with the ggml inside `llama_cpp`
+   (the clash that kept the LLM on CPU in the whisper era). That is the library's stated
+   intent and has not been tried here.
+3. **Quantized variants.** Mistral's `mistral-experimental` org publishes audio.cpp GGUFs
+   ([AudioCPP-Voxtral-Mini-4B-Realtime-2602-GGUF](https://huggingface.co/mistral-experimental/AudioCPP-Voxtral-Mini-4B-Realtime-2602-GGUF)):
+   Q8_0 at 5.1 GB and Q4_K at 3.1 GB on disk, so the 16 GB BF16 figure no longer applies.
+   Runtime VRAM is unmeasured. The 12 GB target card and iris's 16 GB RTX A4000
+   both have room.
+4. **Smaller streaming variant.** None. Mistral's only addition since February is
+   `Voxtral-Mini-4B-Realtime-Arabic` (2026-10-08), the same 4B size.
+
+audio.cpp's own throughput note matters for a live source: a streaming step advances
+80 ms of audio and must finish in under 80 ms, and a session that falls behind stays
+behind (the decoder runs through silence too). On an M3 Air with Q8_0 it measured
+78 to 88 ms per step. CUDA numbers on our hardware are unmeasured.
+
+The comparison has also moved. This ADR was written against batch whisper.cpp. Yammer
+now streams with Kyutai `stt-1b-en_fr` through candle, so Voxtral's case is no longer
+"streaming at all" but more languages (13 against 2) and possibly better accuracy, at
+four times the parameter count. Adopting it is a separate evaluation: per-step latency
+on CUDA, WER on the WAV fixtures in the end-to-end test, and VRAM next to the LLM.
+
 ## Alternatives Considered
 
 ### API-only prototype
