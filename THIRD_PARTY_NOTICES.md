@@ -86,6 +86,21 @@ your modifications to those specific files must be made available under MPL-2.0.
 - **option-ext** - Option extension traits
   - Copyright (c) The option-ext authors
 
+## GNU Lesser General Public License (LGPL-2.1-or-later OR GPL-3.0-or-later) Dependencies
+
+- **librush** - zbus-based IBus engine/factory protocol implementation (connection
+  setup, `org.freedesktop.IBus.Engine`/`Factory` D-Bus interfaces, GVariant
+  serialization for `IBusText`/`IBusAttrList`), used by Yammer's IBus input-method
+  engine component
+  - Copyright (c) secext2022
+  - https://github.com/fm-elpac/librush
+
+Used unmodified, under LGPL-2.1-or-later. Yammer links against it dynamically
+only — it is built into its own shared library, never statically compiled into
+the main `yammer-app`/`yammer-cli` binaries — so Yammer's own MIT-licensed code
+is not a combined work with it. See `CLAUDE.local.md` for the build-level
+constraint this requires.
+
 ## Unicode License (Unicode-3.0) Dependencies
 
 The following ICU and Unicode-related crates are licensed under Unicode-3.0:
