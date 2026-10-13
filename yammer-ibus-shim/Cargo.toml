@@ -1,0 +1,32 @@
+[package]
+name = "yammer-ibus-shim"
+version.workspace = true
+edition.workspace = true
+description = "IBus input-method engine for yammer, built as a dynamically-loaded cdylib"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# LGPL-2.1-or-later OR GPL-3.0-or-later. This is the ONLY crate in the workspace
+# allowed to depend on librush — see CLAUDE.local.md. Used unmodified; this crate
+# compiles to a cdylib that the rest of yammer loads at runtime via `libloading`,
+# never a normal statically-linked Cargo dependency edge.
+#
+# The "pmim" feature just forwards `zbus/tokio` + a `tokio` dep (proven, matches
+# librush's own binary); it also compiles librush's unrelated pmim IME module,
+# which we don't use but which costs nothing at runtime.
+librush = { version = "0.2.3", default-features = false, features = ["pmim"] }
+
+# Pinned to the same range librush requires so Cargo unifies on one resolved
+# version — otherwise zbus::Connection etc. from this crate and from librush
+# would be distinct, incompatible types.
+zbus = { version = "5.18", default-features = false, features = ["tokio"] }
+
+tokio.workspace = true
+
+# Logging deliberately does NOT use `tracing`: this crate is loaded as a cdylib
+# via `libloading`, a separate compilation unit from yammer-app's binary, and
+# `tracing`'s global dispatcher is a crate-local static — it is not guaranteed
+# to be shared across that boundary. Log lines cross via the plain `extern "C"`
+# callback in `ffi.rs` instead.

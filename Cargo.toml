@@ -6,6 +6,8 @@ members = [
     "yammer-stt",
     "yammer-llm",
     "yammer-output",
+    "yammer-ibus",
+    "yammer-ibus-shim",
     "yammer-cli",
     "yammer-app/src-tauri",
 ]

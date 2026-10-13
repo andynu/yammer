@@ -1,0 +1,9 @@
+[package]
+name = "yammer-ibus"
+version.workspace = true
+edition.workspace = true
+description = "Safe wrapper that dlopen's yammer-ibus-shim at runtime"
+
+[dependencies]
+libloading = "0.8"
+tracing.workspace = true
