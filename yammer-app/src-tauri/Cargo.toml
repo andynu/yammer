@@ -30,6 +30,7 @@ yammer-stt = { path = "../../yammer-stt" }
 yammer-llm = { path = "../../yammer-llm" }
 yammer-output = { path = "../../yammer-output" }
 yammer-core = { path = "../../yammer-core" }
+yammer-ibus = { path = "../../yammer-ibus" }
 
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
 tauri-plugin-global-shortcut = "2"

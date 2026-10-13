@@ -21,7 +21,17 @@ use rdev::{listen, Event, EventType, Key};
 
 use pipeline::{DictationPipeline, PipelineConfig, PipelineEvent};
 use yammer_core::Config;
+use yammer_ibus::{IbusEngine, IbusTarget};
 use yammer_output::{OutputMethod, capture_active_window};
+
+/// Capture both the xdotool fallback target and, if the IBus engine is
+/// running, the IBus target — at the same moment, mirroring
+/// `capture_active_window()`'s "before Yammer steals focus" timing.
+fn capture_dictation_target(ibus_engine: &Arc<Option<IbusEngine>>) -> (Option<String>, Option<IbusTarget>) {
+    let window_id = capture_active_window();
+    let ibus_target = ibus_engine.as_ref().as_ref().and_then(|e| e.capture_target());
+    (window_id, ibus_target)
+}
 
 /// Map a config key name to its rdev Key variants (left and right).
 fn config_key_to_rdev(name: &str) -> Vec<Key> {
@@ -106,11 +116,15 @@ fn spawn_hotkey_listener(app_handle: AppHandle, hold_keys: Vec<String>) {
                     info!("{} pressed - starting dictation", label);
                     mark_dictation_requested(&app_handle);
 
-                    // Capture the currently focused window BEFORE showing Yammer,
-                    // so we can refocus it when outputting text
-                    let target = capture_active_window();
+                    // Capture the currently focused window/context BEFORE showing
+                    // Yammer, so we can commit/refocus to it when outputting text
+                    let (window_id, ibus_target) =
+                        capture_dictation_target(&app_handle.state::<AppState>().ibus_engine);
                     if let Ok(mut guard) = app_handle.state::<AppState>().paste_target.lock() {
-                        *guard = target;
+                        *guard = window_id;
+                    }
+                    if let Ok(mut guard) = app_handle.state::<AppState>().ibus_target.lock() {
+                        *guard = ibus_target;
                     }
 
                     if let Some(window) = app_handle.get_webview_window("main") {
@@ -163,7 +177,14 @@ pub struct AppState {
     idle_unload_seconds: u64,
     /// Window ID to refocus before text output (captured before showing Yammer).
     /// Uses std::sync::Mutex (not tokio) so it's accessible from the rdev hotkey thread.
+    /// Fallback only — tried after the IBus path below fails or is absent.
     paste_target: Arc<std::sync::Mutex<Option<String>>>,
+    /// The process's IBus engine, started once at app launch. `None` for the
+    /// whole session if `ibus-daemon` wasn't reachable — every caller treats
+    /// that as "fall back to xdotool/xclip", never as an error.
+    ibus_engine: Arc<Option<IbusEngine>>,
+    /// Instance captured alongside `paste_target`, same timing.
+    ibus_target: Arc<std::sync::Mutex<Option<IbusTarget>>>,
     /// When a hotkey or tray action last asked for dictation, for the
     /// per-dictation timing log. std::sync::Mutex for the same reason as above.
     dictation_requested_at: Arc<std::sync::Mutex<Option<Instant>>>,
@@ -415,9 +436,16 @@ async fn start_dictation_inner(
             Some(p) if p.is_initialized() => {
                 info!("Pipeline is initialized, proceeding with dictation");
 
-                // Set the paste target so output refocuses the user's window
+                // Set the paste target so output refocuses the user's window,
+                // and the IBus target/engine so output commits directly instead
+                // when available (set every run — cheap, and the pipeline may
+                // have been recreated by an idle-unload reload since engine
+                // startup).
                 let target = state.paste_target.lock().ok().and_then(|g| g.clone());
                 p.set_target_window(target);
+                p.set_ibus_engine(state.ibus_engine.clone());
+                let ibus_target = state.ibus_target.lock().ok().and_then(|g| g.clone());
+                p.set_ibus_target(ibus_target);
                 p.set_requested_at(requested_at);
 
                 // In toggle mode, disable silence timeout — user will explicitly stop
@@ -735,6 +763,10 @@ pub fn run() {
     let toggle_shortcut_for_handler = toggle_shortcut.clone();
     let toggle_key_name = app_config.hotkey.toggle_key.clone();
     let last_transcription = Arc::new(Mutex::new(None));
+    // Connect to ibus-daemon once, for the process's whole lifetime. `None`
+    // means every dictation this session falls back to xdotool/xclip —
+    // logged once, inside try_start(), never a fatal startup error.
+    let ibus_engine = Arc::new(IbusEngine::try_start());
     let app_state = AppState {
         pipeline: Arc::new(Mutex::new(None)),
         is_running: Arc::new(Mutex::new(false)),
@@ -746,6 +778,8 @@ pub fn run() {
         idle_timer_handle: Arc::new(Mutex::new(None)),
         idle_unload_seconds,
         paste_target: Arc::new(std::sync::Mutex::new(None)),
+        ibus_engine,
+        ibus_target: Arc::new(std::sync::Mutex::new(None)),
         dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
     };
 
@@ -764,9 +798,13 @@ pub fn run() {
                 // Capture paste target before showing window (for dictation modes)
                 if is_toggle {
                     mark_dictation_requested(app);
-                    let target = capture_active_window();
+                    let (window_id, ibus_target) =
+                        capture_dictation_target(&app.state::<AppState>().ibus_engine);
                     if let Ok(mut guard) = app.state::<AppState>().paste_target.lock() {
-                        *guard = target;
+                        *guard = window_id;
+                    }
+                    if let Ok(mut guard) = app.state::<AppState>().ibus_target.lock() {
+                        *guard = ibus_target;
                     }
                 }
 
@@ -824,9 +862,13 @@ pub fn run() {
                         mark_dictation_requested(app);
 
                         // Capture paste target before showing window
-                        let target = capture_active_window();
+                        let (window_id, ibus_target) =
+                            capture_dictation_target(&app.state::<AppState>().ibus_engine);
                         if let Ok(mut guard) = app.state::<AppState>().paste_target.lock() {
-                            *guard = target;
+                            *guard = window_id;
+                        }
+                        if let Ok(mut guard) = app.state::<AppState>().ibus_target.lock() {
+                            *guard = ibus_target;
                         }
 
                         // Check if window was hidden/minimized and bring it forward
@@ -926,9 +968,13 @@ pub fn run() {
                         info!("Tray: Toggle Recording clicked");
                         mark_dictation_requested(app);
                         // Capture paste target before toggling dictation
-                        let target = capture_active_window();
+                        let (window_id, ibus_target) =
+                            capture_dictation_target(&app.state::<AppState>().ibus_engine);
                         if let Ok(mut guard) = app.state::<AppState>().paste_target.lock() {
-                            *guard = target;
+                            *guard = window_id;
+                        }
+                        if let Ok(mut guard) = app.state::<AppState>().ibus_target.lock() {
+                            *guard = ibus_target;
                         }
                         if let Err(e) = app.emit("dictation-toggle", ()) {
                             error!("Failed to emit dictation-toggle: {}", e);
@@ -1100,6 +1146,8 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
+            ibus_engine: Arc::new(None),
+            ibus_target: Arc::new(std::sync::Mutex::new(None)),
             dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
 
@@ -1135,6 +1183,8 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
+            ibus_engine: Arc::new(None),
+            ibus_target: Arc::new(std::sync::Mutex::new(None)),
             dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
 
@@ -1171,6 +1221,8 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
+            ibus_engine: Arc::new(None),
+            ibus_target: Arc::new(std::sync::Mutex::new(None)),
             dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
 
@@ -1203,6 +1255,8 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
+            ibus_engine: Arc::new(None),
+            ibus_target: Arc::new(std::sync::Mutex::new(None)),
             dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
 

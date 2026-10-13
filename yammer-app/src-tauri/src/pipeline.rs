@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use yammer_audio::{AudioCapture, AudioResampler, SilentInputDetector, VadProcessor, Vad, KYUTAI_SAMPLE_RATE};
+use yammer_ibus::{IbusEngine, IbusTarget};
 use yammer_output::{TextOutput, OutputMethod};
 use yammer_stt::{KyutaiTranscriber, KYUTAI_CHUNK_SAMPLES};
 use yammer_llm::Corrector;
@@ -99,8 +100,16 @@ pub struct DictationPipeline {
     event_tx: mpsc::Sender<PipelineEvent>,
     /// Pre-initialized audio capture to reduce keypress-to-listening latency
     audio_capture: Option<AudioCapture>,
-    /// Window ID to refocus before text output (captured at activation time)
+    /// Window ID to refocus before text output (captured at activation time).
+    /// Fallback only — tried after the IBus path below fails or is absent.
     target_window: Option<String>,
+    /// Shared handle to the process's IBus engine, if one started successfully.
+    /// `Arc` because it's shared across pipeline instances (idle-unload
+    /// reload creates a fresh `DictationPipeline` without restarting IBus).
+    ibus_engine: Arc<Option<IbusEngine>>,
+    /// Instance captured via `ibus_engine` at activation time (mirrors
+    /// `target_window`, same capture-once/use-later semantics).
+    ibus_target: Option<IbusTarget>,
     /// One-shot override for silence timeout (consumed by next run_blocking)
     silence_timeout_override: Option<u32>,
     /// When the user asked for this dictation (consumed by next run_blocking)
@@ -119,6 +128,8 @@ impl DictationPipeline {
             event_tx,
             audio_capture: None,
             target_window: None,
+            ibus_engine: Arc::new(None),
+            ibus_target: None,
             silence_timeout_override: None,
             requested_at: None,
         }
@@ -130,9 +141,21 @@ impl DictationPipeline {
         self.requested_at = Some(at);
     }
 
-    /// Set the target window to refocus before text output
+    /// Set the target window to refocus before text output (xdotool fallback)
     pub fn set_target_window(&mut self, window_id: Option<String>) {
         self.target_window = window_id;
+    }
+
+    /// Set the shared IBus engine handle. Called once right after
+    /// construction, from the same `Arc<Option<IbusEngine>>` the app started
+    /// at launch — `None` if IBus was unavailable this session.
+    pub fn set_ibus_engine(&mut self, engine: Arc<Option<IbusEngine>>) {
+        self.ibus_engine = engine;
+    }
+
+    /// Set the instance captured at activation time (IBus primary path)
+    pub fn set_ibus_target(&mut self, target: Option<IbusTarget>) {
+        self.ibus_target = target;
     }
 
     /// Override the silence timeout for the next recording session only.
@@ -746,6 +769,19 @@ impl DictationPipeline {
         let text_with_space = format!("{} ", text);
         info!("Outputting text: {:?}", text_with_space);
 
+        if let (Some(engine), Some(target)) = (self.ibus_engine.as_ref(), self.ibus_target.as_ref()) {
+            match engine.commit_text(target, &text_with_space) {
+                Ok(()) => {
+                    info!("Text output successful (ibus)");
+                    self.send_state(PipelineState::Done);
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("ibus commit_text failed, falling back to xdotool/xclip: {}", e);
+                }
+            }
+        }
+
         let output = TextOutput::with_options(
             self.config.output_method,
             self.config.typing_delay_ms,
@@ -754,7 +790,7 @@ impl DictationPipeline {
 
         match output.output(&text_with_space) {
             Ok(()) => {
-                info!("Text output successful");
+                info!("Text output successful (xdotool/xclip fallback)");
             }
             Err(e) => {
                 let err = format!("Output failed: {}", e);

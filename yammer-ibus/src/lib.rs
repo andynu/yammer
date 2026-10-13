@@ -9,7 +9,6 @@
 //! reachable, so callers can fall back to the legacy xdotool/xclip path.
 
 use std::ffi::c_char;
-use std::sync::OnceLock;
 
 use libloading::Library;
 use tracing::warn;
@@ -31,6 +30,7 @@ pub struct IbusEngine {
 /// Target captured by [`IbusEngine::capture_target`], to be redeemed later by
 /// [`IbusEngine::commit_text`]. Carries no data of its own — the shim keeps
 /// the real state — it only proves a capture happened.
+#[derive(Clone)]
 pub struct IbusTarget(());
 
 #[derive(Debug)]
@@ -144,17 +144,6 @@ impl IbusEngine {
     }
 }
 
-static WARNED_NO_ENGINE: OnceLock<()> = OnceLock::new();
-
-/// Log once (not on every dictation) that Yammer is running without the
-/// IBus engine, for callers that want a single startup-time note rather than
-/// checking `IbusEngine::try_start()`'s `None` themselves.
-pub fn warn_unavailable_once() {
-    WARNED_NO_ENGINE.get_or_init(|| {
-        warn!("yammer-ibus: IBus engine unavailable this session — falling back to xdotool/xclip output");
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,11 +156,5 @@ mod tests {
     #[test]
     fn try_start_degrades_to_none_when_shim_is_unavailable() {
         assert!(IbusEngine::try_start().is_none());
-    }
-
-    #[test]
-    fn warn_unavailable_once_does_not_panic_when_called_repeatedly() {
-        warn_unavailable_once();
-        warn_unavailable_once();
     }
 }

@@ -49,6 +49,14 @@
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
+    },
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/ibus/component/yammer.xml": "ibus/yammer.xml",
+          "/usr/bin/libyammer_ibus_shim.so": "../../target/release/libyammer_ibus_shim.so"
+        }
+      }
     }
   },
   "plugins": {
