@@ -16,7 +16,7 @@
     <name>org.freedesktop.IBus.Yammer</name>
     <description>Yammer dictation input method</description>
     <exec>/usr/bin/yammer-app --ibus-engine</exec>
-    <version>0.4.2</version>
+    <version>0.5.0</version>
     <author>Andy</author>
     <license>MIT</license>
     <homepage>https://github.com/andy/yammer</homepage>

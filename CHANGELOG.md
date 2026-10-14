@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.5.0] - 2026-10-14
+
+### Added
+- **IBus input engine**: Yammer registers as an IBus input method ("Yammer
+  Dictation" under Settings > Keyboard > Input Sources) and commits dictated text
+  through IBus into the focused app. Normal typing passes through unchanged. The
+  clipboard/xdotool path remains the fallback when IBus is unavailable or the
+  commit fails. The engine lives in a separate `libyammer_ibus_shim.so`, loaded at
+  runtime, so the LGPL `librush` dependency is only ever dynamically linked. See
+  `docs/IBUS_SETUP.md` for the one-time setup.
+- Stop dictation with "Microphone is muted" after one second of exact-zero
+  samples, instead of listening silently and reporting "No audio recorded".
+- One info log line per dictation with a stage timing breakdown (keypress to
+  listening, speech to transcript, correction, typing, total).
+- WAV fixtures and an `#[ignore]`d end-to-end transcription regression test, run
+  by hand before releases.
+
+### Changed
+- Pasting sets both PRIMARY and CLIPBOARD, so dictated text works with
+  Shift+Insert in terminals and Ctrl+V in GUI apps.
+- The paste shortcut is sent from a uinput virtual keyboard. On GNOME Wayland,
+  xdotool's XTEST events queued behind the RemoteDesktop portal's approval dialog
+  and arrived late. xdotool remains the fallback without `/dev/uinput`.
+- The dictation window is non-focusable on X11. Escape-to-discard no longer
+  works there, since the window never receives keys.
+- Before output, Yammer hides its own window if it holds keyboard focus and waits
+  up to 500ms for focus to return to the target app. On Wayland the window takes
+  focus when shown regardless of the non-focusable setting, so dictated text went
+  into Yammer's own window and the overlay never auto-hid.
+- Keep the raw transcript when LLM correction comes back empty or rewrites the
+  text beyond punctuation, capitalization and word-splitting edits.
+
+### Fixed
+- The IBus engine stopped working after the first hotkey press of a session: each
+  `--toggle` second instance took over the engine's IBus bus name, then exited.
+  The engine now starts only in the primary instance.
+- `yammer transcribe` dropped the last ~0.5s of speech and leaked held-back words
+  into the next segment; each call now resets the model and flushes trailing
+  silence.
+- The CPU fallback for speech-to-text failed on every step (missing BF16 kernels);
+  the language model now loads as F32 on CPU. CUDA keeps BF16.
+- Build failure under GCC 15 in `sentencepiece-sys` (missing `<cstdint>`).
+
 ## [0.4.3] - 2026-03-23
 
 ### Fixed
