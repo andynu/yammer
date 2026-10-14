@@ -97,6 +97,13 @@ pub extern "C" fn yammer_ibus_shim_capture_target() -> i32 {
     }
 }
 
+/// Number of `focus_in` events seen so far, or 0 before `start`. Callers
+/// compare two readings to tell whether focus has arrived in between.
+#[unsafe(no_mangle)]
+pub extern "C" fn yammer_ibus_shim_focus_generation() -> u64 {
+    SHIM.get().map_or(0, |shim| shim.focus.focus_generation())
+}
+
 /// Commit `text` (must be valid UTF-8, `text_len` bytes at `text_ptr`) into
 /// the most recently captured target.
 ///

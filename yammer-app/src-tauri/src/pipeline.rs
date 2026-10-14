@@ -114,7 +114,17 @@ pub struct DictationPipeline {
     silence_timeout_override: Option<u32>,
     /// When the user asked for this dictation (consumed by next run_blocking)
     requested_at: Option<Instant>,
+    /// Hides Yammer's window if it holds keyboard focus; returns whether it
+    /// did. On Wayland the window takes focus when shown, and both output
+    /// paths deliver to whatever has focus.
+    release_focus: Option<ReleaseFocus>,
 }
+
+pub type ReleaseFocus = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// How long to wait for the compositor to hand focus back after hiding
+/// Yammer's window, before committing anyway.
+pub const FOCUS_RETURN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl DictationPipeline {
     /// Create a new pipeline with the given configuration
@@ -132,6 +142,7 @@ impl DictationPipeline {
             ibus_target: None,
             silence_timeout_override: None,
             requested_at: None,
+            release_focus: None,
         }
     }
 
@@ -151,6 +162,25 @@ impl DictationPipeline {
     /// at launch — `None` if IBus was unavailable this session.
     pub fn set_ibus_engine(&mut self, engine: Arc<OnceLock<IbusEngine>>) {
         self.ibus_engine = engine;
+    }
+
+    pub fn set_release_focus(&mut self, release: ReleaseFocus) {
+        self.release_focus = Some(release);
+    }
+
+    /// Run the release hook and, if it hid the window, wait for focus to land
+    /// back on the dictation target. Returns whether the hook released focus.
+    fn release_focus_for_output(&self) -> bool {
+        let since = self.ibus_engine.get().map(|e| e.focus_generation());
+        let released = self.release_focus.as_ref().is_some_and(|release| release());
+        if released {
+            if let (Some(engine), Some(since)) = (self.ibus_engine.get(), since) {
+                if !engine.wait_for_focus_in(since, FOCUS_RETURN_TIMEOUT) {
+                    warn!("No focus_in within {:?} of hiding the window; outputting anyway", FOCUS_RETURN_TIMEOUT);
+                }
+            }
+        }
+        released
     }
 
     /// Set the instance captured at activation time (IBus primary path)
@@ -769,6 +799,10 @@ impl DictationPipeline {
         let text_with_space = format!("{} ", text);
         info!("Outputting text: {:?}", text_with_space);
 
+        if self.release_focus_for_output() {
+            info!("Hid window to return focus to the dictation target");
+        }
+
         if let (Some(engine), Some(target)) = (self.ibus_engine.get(), self.ibus_target.as_ref()) {
             match engine.commit_text(target, &text_with_space) {
                 Ok(()) => {
@@ -836,6 +870,31 @@ mod tests {
         assert!((config.vad_threshold - 0.01).abs() < f64::EPSILON);
         assert!(config.audio_device.is_none());
         assert_eq!(config.silence_timeout_seconds, 5);
+    }
+
+    #[test]
+    fn release_focus_calls_the_hook_and_reports_whether_it_released() {
+        let (tx, _rx) = mpsc::channel(10);
+        let mut pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        pipeline.set_release_focus(Arc::new(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+            true
+        }));
+
+        let started = Instant::now();
+        assert!(pipeline.release_focus_for_output());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // No IBus engine, so nothing to wait for.
+        assert!(started.elapsed() < FOCUS_RETURN_TIMEOUT);
+    }
+
+    #[test]
+    fn release_focus_without_a_hook_releases_nothing() {
+        let (tx, _rx) = mpsc::channel(10);
+        let pipeline = DictationPipeline::new(PipelineConfig::default(), tx);
+        assert!(!pipeline.release_focus_for_output());
     }
 
     #[test]

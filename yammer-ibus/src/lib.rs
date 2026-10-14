@@ -9,6 +9,7 @@
 //! reachable, so callers can fall back to the legacy xdotool/xclip path.
 
 use std::ffi::c_char;
+use std::time::{Duration, Instant};
 
 use libloading::Library;
 use tracing::warn;
@@ -18,6 +19,22 @@ const SHIM_LIB_NAME: &str = "libyammer_ibus_shim.so";
 type StartFn = unsafe extern "C" fn(extern "C" fn(*const c_char)) -> i32;
 type CaptureTargetFn = unsafe extern "C" fn() -> i32;
 type CommitTextFn = unsafe extern "C" fn(*const u8, usize) -> i32;
+type FocusGenerationFn = unsafe extern "C" fn() -> u64;
+
+/// Poll `read` until it returns something other than `since`, or `timeout`
+/// passes. Returns whether it changed.
+fn wait_for_change(read: impl Fn() -> u64, since: u64, timeout: Duration, poll: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if read() != since {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(poll);
+    }
+}
 
 /// A loaded, started shim. Symbols are re-resolved on each call rather than
 /// cached — this is called at most once or twice per dictation toggle, not a
@@ -111,6 +128,24 @@ impl IbusEngine {
         if rc == 0 { Some(IbusTarget(())) } else { None }
     }
 
+    /// Number of `focus_in` events the engine has seen. 0 if the shim lacks
+    /// the symbol (an older `.so`).
+    pub fn focus_generation(&self) -> u64 {
+        match unsafe { self.lib.get::<FocusGenerationFn>(b"yammer_ibus_shim_focus_generation\0") } {
+            Ok(f) => unsafe { f() },
+            Err(e) => {
+                warn!("yammer-ibus: focus_generation symbol lookup failed: {e}");
+                0
+            }
+        }
+    }
+
+    /// Block until a `focus_in` arrives after the reading `since` was taken,
+    /// or `timeout` passes. Returns whether focus arrived.
+    pub fn wait_for_focus_in(&self, since: u64, timeout: Duration) -> bool {
+        wait_for_change(|| self.focus_generation(), since, timeout, Duration::from_millis(10))
+    }
+
     /// Commit `text` into the instance captured by `target`, regardless of
     /// what currently has focus.
     pub fn commit_text(&self, target: &IbusTarget, text: &str) -> Result<(), IbusError> {
@@ -160,5 +195,23 @@ mod tests {
     fn try_start_degrades_to_none_when_shim_is_unavailable() {
         let missing = unsafe { Library::new("/nonexistent/libyammer_ibus_shim.so") };
         assert!(IbusEngine::start_from(missing).is_none());
+    }
+
+    #[test]
+    fn wait_for_change_returns_true_once_the_reading_moves_past_since() {
+        let calls = std::cell::Cell::new(0u64);
+        let read = || {
+            calls.set(calls.get() + 1);
+            if calls.get() >= 3 { 8 } else { 7 }
+        };
+        assert!(wait_for_change(read, 7, Duration::from_millis(500), Duration::from_millis(1)));
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn wait_for_change_times_out_when_the_reading_never_moves() {
+        let started = Instant::now();
+        assert!(!wait_for_change(|| 7, 7, Duration::from_millis(30), Duration::from_millis(5)));
+        assert!(started.elapsed() >= Duration::from_millis(30));
     }
 }

@@ -444,6 +444,13 @@ async fn start_dictation_inner(
                 let target = state.paste_target.lock().ok().and_then(|g| g.clone());
                 p.set_target_window(target);
                 p.set_ibus_engine(state.ibus_engine.clone());
+                let window_app = app.clone();
+                p.set_release_focus(Arc::new(move || {
+                    let Some(window) = window_app.get_webview_window("main") else {
+                        return false;
+                    };
+                    window.is_focused().unwrap_or(false) && window.hide().is_ok()
+                }));
                 let ibus_target = state.ibus_target.lock().ok().and_then(|g| g.clone());
                 p.set_ibus_target(ibus_target);
                 p.set_requested_at(requested_at);

@@ -32,6 +32,9 @@ struct FocusState {
     /// this is "where the cursor was when dictation was invoked", which may
     /// differ from `current` by the time `commit_text` runs.
     captured: Option<OwnedObjectPath>,
+    /// Bumped by every `focus_in`. GNOME Shell routes every client through
+    /// one engine path, so "focus came back" can't be read from the path.
+    focus_generation: u64,
 }
 
 /// Shared handle to "whichever engine instance last had focus". Cheap to
@@ -78,8 +81,15 @@ impl FocusTracker {
         Some((conn, path))
     }
 
+    /// Number of `focus_in` events seen so far.
+    pub fn focus_generation(&self) -> u64 {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).focus_generation
+    }
+
     fn set_focused(&self, path: OwnedObjectPath) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).current = Some(path);
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.current = Some(path);
+        guard.focus_generation += 1;
     }
 
     fn clear_if(&self, path: &OwnedObjectPath) {
@@ -200,6 +210,31 @@ mod tests {
 
         let captured = focus.state.lock().unwrap().captured.clone();
         assert_eq!(captured, Some(path("/org/freedesktop/IBus/Engine/1")));
+    }
+
+    #[test]
+    fn focus_generation_advances_on_every_focus_in() {
+        let focus = FocusTracker::new();
+        let start = focus.focus_generation();
+
+        focus.set_focused(path("/org/freedesktop/IBus/Engine/1"));
+        let after_first = focus.focus_generation();
+        assert!(after_first > start);
+
+        // Under GNOME Shell every context shares one engine path, so a
+        // refocus to the same path must still count as new focus.
+        focus.clear_if(&path("/org/freedesktop/IBus/Engine/1"));
+        focus.set_focused(path("/org/freedesktop/IBus/Engine/1"));
+        assert!(focus.focus_generation() > after_first);
+    }
+
+    #[test]
+    fn focus_out_does_not_advance_focus_generation() {
+        let focus = FocusTracker::new();
+        focus.set_focused(path("/org/freedesktop/IBus/Engine/1"));
+        let before = focus.focus_generation();
+        focus.clear_if(&path("/org/freedesktop/IBus/Engine/1"));
+        assert_eq!(focus.focus_generation(), before);
     }
 
     #[test]
