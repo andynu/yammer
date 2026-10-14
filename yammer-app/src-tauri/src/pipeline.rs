@@ -1,7 +1,7 @@
 //! Dictation pipeline - coordinates audio capture, STT, LLM correction, and text output
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -106,7 +106,7 @@ pub struct DictationPipeline {
     /// Shared handle to the process's IBus engine, if one started successfully.
     /// `Arc` because it's shared across pipeline instances (idle-unload
     /// reload creates a fresh `DictationPipeline` without restarting IBus).
-    ibus_engine: Arc<Option<IbusEngine>>,
+    ibus_engine: Arc<OnceLock<IbusEngine>>,
     /// Instance captured via `ibus_engine` at activation time (mirrors
     /// `target_window`, same capture-once/use-later semantics).
     ibus_target: Option<IbusTarget>,
@@ -128,7 +128,7 @@ impl DictationPipeline {
             event_tx,
             audio_capture: None,
             target_window: None,
-            ibus_engine: Arc::new(None),
+            ibus_engine: Arc::new(OnceLock::new()),
             ibus_target: None,
             silence_timeout_override: None,
             requested_at: None,
@@ -147,9 +147,9 @@ impl DictationPipeline {
     }
 
     /// Set the shared IBus engine handle. Called once right after
-    /// construction, from the same `Arc<Option<IbusEngine>>` the app started
+    /// construction, from the same `Arc<OnceLock<IbusEngine>>` the app started
     /// at launch — `None` if IBus was unavailable this session.
-    pub fn set_ibus_engine(&mut self, engine: Arc<Option<IbusEngine>>) {
+    pub fn set_ibus_engine(&mut self, engine: Arc<OnceLock<IbusEngine>>) {
         self.ibus_engine = engine;
     }
 
@@ -769,7 +769,7 @@ impl DictationPipeline {
         let text_with_space = format!("{} ", text);
         info!("Outputting text: {:?}", text_with_space);
 
-        if let (Some(engine), Some(target)) = (self.ibus_engine.as_ref(), self.ibus_target.as_ref()) {
+        if let (Some(engine), Some(target)) = (self.ibus_engine.get(), self.ibus_target.as_ref()) {
             match engine.commit_text(target, &text_with_space) {
                 Ok(()) => {
                     info!("Text output successful (ibus)");

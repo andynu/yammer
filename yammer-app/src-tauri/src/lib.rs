@@ -4,7 +4,7 @@ mod pipeline;
 mod timing;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -27,9 +27,9 @@ use yammer_output::{OutputMethod, capture_active_window};
 /// Capture both the xdotool fallback target and, if the IBus engine is
 /// running, the IBus target — at the same moment, mirroring
 /// `capture_active_window()`'s "before Yammer steals focus" timing.
-fn capture_dictation_target(ibus_engine: &Arc<Option<IbusEngine>>) -> (Option<String>, Option<IbusTarget>) {
+fn capture_dictation_target(ibus_engine: &Arc<OnceLock<IbusEngine>>) -> (Option<String>, Option<IbusTarget>) {
     let window_id = capture_active_window();
-    let ibus_target = ibus_engine.as_ref().as_ref().and_then(|e| e.capture_target());
+    let ibus_target = ibus_engine.get().and_then(|e| e.capture_target());
     (window_id, ibus_target)
 }
 
@@ -182,7 +182,7 @@ pub struct AppState {
     /// The process's IBus engine, started once at app launch. `None` for the
     /// whole session if `ibus-daemon` wasn't reachable — every caller treats
     /// that as "fall back to xdotool/xclip", never as an error.
-    ibus_engine: Arc<Option<IbusEngine>>,
+    ibus_engine: Arc<OnceLock<IbusEngine>>,
     /// Instance captured alongside `paste_target`, same timing.
     ibus_target: Arc<std::sync::Mutex<Option<IbusTarget>>>,
     /// When a hotkey or tray action last asked for dictation, for the
@@ -763,10 +763,11 @@ pub fn run() {
     let toggle_shortcut_for_handler = toggle_shortcut.clone();
     let toggle_key_name = app_config.hotkey.toggle_key.clone();
     let last_transcription = Arc::new(Mutex::new(None));
-    // Connect to ibus-daemon once, for the process's whole lifetime. `None`
-    // means every dictation this session falls back to xdotool/xclip —
-    // logged once, inside try_start(), never a fatal startup error.
-    let ibus_engine = Arc::new(IbusEngine::try_start());
+    // Filled in setup(), never here: setup() runs only in the primary
+    // instance. A second instance (every `--toggle` hotkey press) that
+    // connected here would take over the engine's IBus bus name, then exit
+    // and leave the primary's engine unreachable for the rest of the session.
+    let ibus_engine = Arc::new(OnceLock::new());
     let app_state = AppState {
         pipeline: Arc::new(Mutex::new(None)),
         is_running: Arc::new(Mutex::new(false)),
@@ -907,6 +908,13 @@ pub fn run() {
         )
         .manage(app_state)
         .setup(move |app| {
+            // Connect to ibus-daemon once, for the process's whole lifetime. `None`
+            // means every dictation this session falls back to xdotool/xclip —
+            // logged once, inside try_start(), never a fatal startup error.
+            if let Some(engine) = IbusEngine::try_start() {
+                let _ = app.state::<AppState>().ibus_engine.set(engine);
+            }
+
             #[cfg(debug_assertions)]
             {
                 let window = app.get_webview_window("main").expect("Main window not found");
@@ -1146,7 +1154,7 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
-            ibus_engine: Arc::new(None),
+            ibus_engine: Arc::new(OnceLock::new()),
             ibus_target: Arc::new(std::sync::Mutex::new(None)),
             dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
@@ -1183,7 +1191,7 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
-            ibus_engine: Arc::new(None),
+            ibus_engine: Arc::new(OnceLock::new()),
             ibus_target: Arc::new(std::sync::Mutex::new(None)),
             dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
@@ -1221,7 +1229,7 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
-            ibus_engine: Arc::new(None),
+            ibus_engine: Arc::new(OnceLock::new()),
             ibus_target: Arc::new(std::sync::Mutex::new(None)),
             dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
@@ -1255,7 +1263,7 @@ mod tests {
             idle_timer_handle: Arc::new(Mutex::new(None)),
             idle_unload_seconds: 7200,
             paste_target: Arc::new(std::sync::Mutex::new(None)),
-            ibus_engine: Arc::new(None),
+            ibus_engine: Arc::new(OnceLock::new()),
             ibus_target: Arc::new(std::sync::Mutex::new(None)),
             dictation_requested_at: Arc::new(std::sync::Mutex::new(None)),
         };
