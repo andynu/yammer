@@ -67,10 +67,14 @@ impl IbusEngine {
     /// failure — missing `.so`, symbol mismatch, no `ibus-daemon` reachable
     /// — logging the reason at `warn` so it's visible without being fatal.
     pub fn try_start() -> Option<Self> {
+        Self::start_from(unsafe { Self::load_library() })
+    }
+
+    fn start_from(loaded: Result<Library, libloading::Error>) -> Option<Self> {
         // SAFETY: we only call functions resolved by name below, matching
         // the exact signatures declared in yammer-ibus-shim/src/ffi.rs, and
         // we keep `Library` alive for this struct's whole lifetime.
-        let lib = match unsafe { Self::load_library() } {
+        let lib = match loaded {
             Ok(lib) => lib,
             Err(e) => {
                 warn!("yammer-ibus: could not load {SHIM_LIB_NAME}: {e}");
@@ -148,13 +152,13 @@ impl IbusEngine {
 mod tests {
     use super::*;
 
-    /// `libyammer_ibus_shim.so` is not next to this test binary nor on the
-    /// normal dynamic linker search path in a plain `cargo test` run, so
-    /// this exercises the real "shim unavailable" case — the same one that
-    /// should trigger the xdotool/xclip fallback in production. The
-    /// contract under test is "never panics, always degrades to None".
+    /// The "shim unavailable" case that should trigger the xdotool/xclip
+    /// fallback in production. The contract under test is "never panics,
+    /// always degrades to None". Uses a path that cannot exist: a found shim
+    /// with a running ibus-daemon would take the live app's IBus name.
     #[test]
     fn try_start_degrades_to_none_when_shim_is_unavailable() {
-        assert!(IbusEngine::try_start().is_none());
+        let missing = unsafe { Library::new("/nonexistent/libyammer_ibus_shim.so") };
+        assert!(IbusEngine::start_from(missing).is_none());
     }
 }
